@@ -5,6 +5,8 @@ local Mock = {
     inbox = {},
     frames = {},
     hooks = {},
+    getInboxTextCalls = 0,
+    markReadOnGetInboxText = true,
 }
 
 function Mock.reset()
@@ -14,6 +16,8 @@ function Mock.reset()
     Mock.inbox = {}
     Mock.popup = nil
     Mock.ambiguateQualifies = false
+    Mock.getInboxTextCalls = 0
+    Mock.markReadOnGetInboxText = true
 end
 
 function Mock.trigger(event)
@@ -88,6 +92,8 @@ end
 
 function GetInboxText(index)
     local mail = Mock.inbox[index]
+    Mock.getInboxTextCalls = Mock.getInboxTextCalls + 1
+    if mail and Mock.markReadOnGetInboxText then mail.wasRead = true end
     return mail and mail.body or nil
 end
 

@@ -14,6 +14,8 @@ if CorrespondenciaDB and not CartasDB.migratedFromCorrespondencia then
 end
 
 local pendingMail = nil
+local activeCompose = nil
+local activeMailRefresh = nil
 
 local function EnsureDB()
     CartasDB = CartasDB or {}
@@ -339,9 +341,10 @@ local function SaveIncomingMail(index, used, scanNow)
         existing._lastSeenAt = scanNow or time()
     end
 
-    -- If Blizzard already loaded this body (for example because the player
-    -- opened it in the stock mailbox), preserve it without forcing the mail UI.
-    if type(GetInboxText) == "function" then
+    -- Never request an unread body during a background scan. In WoW,
+    -- GetInboxText() may transition the live message to read. Once Blizzard
+    -- already reports it as read, preserving the loaded body is safe.
+    if wasRead and type(GetInboxText) == "function" then
         local loadedBody = GetInboxText(index)
         if loadedBody and loadedBody ~= "" then
             existing.body = loadedBody
@@ -419,8 +422,8 @@ frame:SetScript("OnEvent", function(self, event)
         SavePendingMail()
     elseif event == "MAIL_INBOX_UPDATE" then
         -- MAIL_INBOX_UPDATE fires when the inbox is loaded or a message is opened/read.
-        -- GetInboxText() gives us the full body of the letter.
         ScanInbox()
+        if activeMailRefresh then activeMailRefresh() end
     end
 end)
 
@@ -476,6 +479,10 @@ local function GetLiveInbox()
     return result
 end
 
+local function IsLiveInboxMailNew(live)
+    return live ~= nil and not live.wasRead
+end
+
 local function GetSeenKey(owner, mail)
     return (owner or "") .. "\031" .. (mail.key or
         ((mail.sender or "") .. "\031" .. (mail.subject or "") .. "\031" .. (mail.body or "")))
@@ -483,6 +490,7 @@ end
 
 local function IsMailNew(owner, mail)
     if mail.direction ~= "in" then return false end
+    if mail.wasRead then return false end
     EnsureDB()
     return not CartasDB.seen[GetSeenKey(owner, mail)]
 end
@@ -758,6 +766,7 @@ local function BuildParticipantGroups(all, targetLower)
                     subject = NormalizeThreadSubject(mail.subject),
                     messages = {},
                     latest = 0,
+                    newCount = 0,
                 }
                 participant.threadMap[threadKey] = thread
                 table.insert(participant.threads, thread)
@@ -770,6 +779,7 @@ local function BuildParticipantGroups(all, targetLower)
 
             local timestamp = tonumber(mail.timestamp) or 0
             thread.latest = math.max(thread.latest, timestamp)
+            if mail.isNew then thread.newCount = thread.newCount + 1 end
             participant.latest = math.max(participant.latest, timestamp)
             participant.messageCount = participant.messageCount + 1
             if mail.isNew then participant.newCount = participant.newCount + 1 end
@@ -825,9 +835,6 @@ local function ShowHistory(target)
         PrintLine(found .. " mensaje(s) encontrado(s).")
     end
 end
-
-local activeCompose = nil
-local activeMailRefresh = nil
 
 local function FindArchiveByBody(owner, sender, subject, body, timestamp)
     EnsureArchive()
@@ -1350,6 +1357,20 @@ StaticPopupDialogs["CARTAS_DELETE_ALL"] = {
     preferredIndex = 3,
 }
 
+local function ResolveExpandedState(state, key, defaultExpanded)
+    if state[key] == nil then return defaultExpanded and true or false end
+    return state[key] and true or false
+end
+
+local function ShowFrameWithInitialRefresh(frameToShow, refresh)
+    frameToShow:SetScript("OnShow", refresh)
+    if type(frameToShow.IsShown) == "function" and frameToShow:IsShown() then
+        refresh()
+    else
+        frameToShow:Show()
+    end
+end
+
 local function OpenHistoryFrame()
     EnsureDB()
 
@@ -1442,6 +1463,8 @@ local function OpenHistoryFrame()
     list:SetScrollChild(content)
 
     local expandedParticipants = {}
+    local expandedThreads = {}
+    local liveInboxExpanded = true
 
     local function Refresh()
         for _, child in ipairs({content:GetChildren()}) do
@@ -1484,21 +1507,33 @@ local function OpenHistoryFrame()
         liveInbox = filteredLiveInbox
 
         if #liveInbox > 0 then
-            local ih = CreateFrame("Frame", nil, content, "BackdropTemplate")
+            local ih = CreateFrame("Button", nil, content, "BackdropTemplate")
             ih:SetPoint("TOPLEFT", 0, y)
             ih:SetSize(820, 34)
+            ih:RegisterForClicks("LeftButtonUp")
             ih:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
             ih:SetBackdropColor(0.16,0.12,0.08,0.95)
+            ih:SetScript("OnEnter", function(self)
+                self:SetBackdropColor(0.22,0.17,0.11,0.95)
+            end)
+            ih:SetScript("OnLeave", function(self)
+                self:SetBackdropColor(0.16,0.12,0.08,0.95)
+            end)
+            ih:SetScript("OnClick", function()
+                liveInboxExpanded = not liveInboxExpanded
+                Refresh()
+            end)
             local iht = ih:CreateFontString(nil,"OVERLAY","GameFontNormal")
             iht:SetPoint("LEFT",10,0)
-            iht:SetText("|cffFFD100BUZÓN ACTUAL|r  —  |cffaaaaaa"..tostring(#liveInbox).." correo(s)|r")
+            local inboxMarker = liveInboxExpanded and "[-]" or "[+]"
+            iht:SetText(inboxMarker.."  |cffFFD100BUZÓN ACTUAL|r  —  |cffaaaaaa"..tostring(#liveInbox).." correo(s)|r")
             y = y - 40
 
-            for _, live in ipairs(liveInbox) do
+            if liveInboxExpanded then
+              for _, live in ipairs(liveInbox) do
                 local owner = UnitName("player") or ""
                 local stored = FindIncomingRecord(owner, live.inboxIndex, live.sender, live.subject, live.daysLeft, live.CODAmount)
-                local isNew = not live.wasRead
-                if stored and stored.wasRead then isNew = false end
+                local isNew = IsLiveInboxMailNew(live)
                 local card = CreateFrame("Frame", nil, content, "BackdropTemplate")
                 card:SetPoint("TOPLEFT", 0, y)
                 card:SetWidth(820)
@@ -1617,8 +1652,9 @@ local function OpenHistoryFrame()
                 local h = math.max(110, 66 + body:GetStringHeight() + 24)
                 card:SetHeight(h)
                 y = y - h - 7
+              end
+              y = y - 12
             end
-            y = y - 12
         end
 
         if #participants > 0 then
@@ -1641,8 +1677,7 @@ local function OpenHistoryFrame()
         end
 
         for _, participant in ipairs(participants) do
-            local isExpanded = expandedParticipants[participant.key]
-            if isExpanded == nil then isExpanded = target ~= nil end
+            local isExpanded = ResolveExpandedState(expandedParticipants, participant.key, target ~= nil)
 
             local participantHeader = CreateFrame("Button", nil, content, "BackdropTemplate")
             participantHeader:SetPoint("TOPLEFT", 0, y)
@@ -1678,20 +1713,36 @@ local function OpenHistoryFrame()
                 for _, thread in ipairs(participant.threads) do
                     local chain = BuildThreadChain(thread.messages)
                     local threadIndent = 20
-                    local th = CreateFrame("Frame",nil,content,"BackdropTemplate")
+                    local isThreadExpanded = ResolveExpandedState(expandedThreads, thread.key, target ~= nil)
+                    local th = CreateFrame("Button",nil,content,"BackdropTemplate")
                     th:SetPoint("TOPLEFT",threadIndent,y)
                     th:SetSize(820 - threadIndent,34)
+                    th:RegisterForClicks("LeftButtonUp")
                     th:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
                     th:SetBackdropColor(0.12,0.12,0.16,0.95)
+                    th:SetScript("OnEnter", function(self)
+                        self:SetBackdropColor(0.17,0.17,0.22,0.95)
+                    end)
+                    th:SetScript("OnLeave", function(self)
+                        self:SetBackdropColor(0.12,0.12,0.16,0.95)
+                    end)
+                    th:SetScript("OnClick", function()
+                        expandedThreads[thread.key] = not isThreadExpanded
+                        Refresh()
+                    end)
                     local txt = th:CreateFontString(nil,"OVERLAY","GameFontNormal")
                     txt:SetPoint("LEFT",10,0)
                     txt:SetPoint("RIGHT",-10,0)
                     txt:SetJustifyH("LEFT")
                     local threadMailLabel = #chain == 1 and "carta" or "cartas"
-                    txt:SetText("|cffFFD100CONVERSACIÓN|r  —  |cffaaaaaa"..thread.subject.." · "..#chain.." "..threadMailLabel.."|r")
+                    local threadMarker = isThreadExpanded and "[-]" or "[+]"
+                    local threadNewLabel = thread.newCount == 1 and "NUEVA" or "NUEVAS"
+                    local threadNewText = thread.newCount > 0 and "  |cff7CFF00["..thread.newCount.." "..threadNewLabel.."]|r" or ""
+                    txt:SetText(threadMarker.."  |cffFFD100CONVERSACIÓN|r"..threadNewText.."  —  |cffaaaaaa"..thread.subject.." · "..#chain.." "..threadMailLabel.."|r")
                     y = y - 40
 
-                    for _, mail in ipairs(chain) do
+                    if isThreadExpanded then
+                      for _, mail in ipairs(chain) do
                         -- Repeated RE prefixes do not encode a reliable reply tree.
                         -- Keep one visual reply level and use time for conversation order.
                         local depth = mail.isReply and 1 or 0
@@ -1757,8 +1808,9 @@ local function OpenHistoryFrame()
                         card:SetHeight(h)
                         y=y-h-7
                         maxRight=math.max(maxRight,indent+cardWidth)
+                      end
+                      y=y-12
                     end
-                    y=y-12
                 end
             end
         end
@@ -1770,8 +1822,7 @@ local function OpenHistoryFrame()
     activeMailRefresh = Refresh
     button:SetScript("OnClick",Refresh)
     search:SetScript("OnEnterPressed",function(self) self:ClearFocus(); Refresh() end)
-    f:SetScript("OnShow",Refresh)
-    f:Show()
+    ShowFrameWithInitialRefresh(f, Refresh)
 end
 
 
@@ -1849,6 +1900,9 @@ if _G and _G.CartasTestMode then
         SavePendingMail = SavePendingMail,
         ScanInbox = ScanInbox,
         CaptureInboxMail = CaptureInboxMail,
+        GetLiveInbox = GetLiveInbox,
+        IsLiveInboxMailNew = IsLiveInboxMailNew,
+        IsMailNew = IsMailNew,
         GetAllCorrespondence = GetAllCorrespondence,
         IsConversationMail = IsConversationMail,
         AnalyzeThreadSubject = AnalyzeThreadSubject,
@@ -1870,6 +1924,8 @@ if _G and _G.CartasTestMode then
         DeleteAllHistory = DeleteAllHistory,
         RestoreAllHistory = RestoreAllHistory,
         GetHiddenHistoryCount = GetHiddenHistoryCount,
+        ResolveExpandedState = ResolveExpandedState,
+        ShowFrameWithInitialRefresh = ShowFrameWithInitialRefresh,
     }
 end
 

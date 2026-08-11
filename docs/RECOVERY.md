@@ -14,7 +14,7 @@ un paquete público.
 
 Desde la raíz del repositorio:
 
-`powershell -ExecutionPolicy Bypass -File .\tools\New-CartasRelease.ps1 -Label ETIQUETA`
+`powershell -ExecutionPolicy Bypass -File .\tools\New-CartasRelease.ps1`
 
 El paquete versionado se guarda en el directorio local ignorado `Releases`. El
 script también actualiza `Wow-Midnight-Cartas-Last-Version.zip`, que es el único
@@ -23,6 +23,12 @@ ZIP público y contiene únicamente:
 - `Cartas/Cartas.lua`
 - `Cartas/Cartas.toc`
 - `Cartas/README.txt`
+
+Después hay que ejecutar `tools/Test-PublicRepository.ps1`, incluir la copia
+raíz Last-Version actualizada en el commit y hacer push de `main`. El ZIP bajo
+`Releases`, las SavedVariables y los backups nunca se añaden a Git. `-Label` se
+usa solo para un calificador local adicional y `-Force` únicamente al regenerar
+de forma deliberada la misma versión.
 
 ## Instalar o volver atrás
 

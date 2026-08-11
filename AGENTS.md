@@ -43,7 +43,10 @@ solo existe para migrar el nombre antiguo. Los datos reales viven bajo
 - `hooksecurefunc("SendMail", ...)` captura destinatario, asunto y cuerpo.
 - `MAIL_SEND_SUCCESS` confirma y añade el enviado; un fallo no debe archivarse.
 - `MAIL_INBOX_UPDATE` escanea cabeceras y añade recibidos sin purgar ausentes.
-- `GetInboxText` solo se conserva cuando Blizzard ya ha cargado el cuerpo.
+- Un escaneo nunca llama a `GetInboxText` para una cabecera con `wasRead=false`:
+  esa llamada puede marcar como leída una carta que el usuario no abrió.
+- `GetInboxText` en segundo plano solo se usa si Blizzard ya devuelve
+  `wasRead=true`; `CaptureInboxMail` lo usa tras la acción explícita Leer/Ver.
 - `CaptureInboxMail` abre/espera una carta solicitada y completa su registro.
 - `GetAllCorrespondence` combina enviados y `archive` para el personaje actual.
 - `IsConversationMail` excluye del hilo correo no respondible y correo GM, sin
@@ -79,8 +82,15 @@ No usar la cantidad de `RE:` como orden estructural: `BuildReplySubject` la
 reinicia a un único prefijo y una respuesta reciente quedaría fuera de lugar.
 
 La vista histórica se construye con `BuildParticipantGroups`: interlocutor,
-conversaciones y cartas. Los grupos empiezan contraídos salvo al buscar. El
-estado desplegado pertenece a la ventana y nunca se persiste en `CartasDB`.
+conversaciones y cartas. Los interlocutores y conversaciones empiezan contraídos
+salvo al buscar. `BUZÓN ACTUAL` empieza expandido. El estado desplegado pertenece
+a la ventana y nunca se persiste en `CartasDB`.
+
+En `BUZÓN ACTUAL`, `GetInboxHeaderInfo().wasRead` es la única autoridad para
+mostrar `[NUEVA]` o `[LEÍDA]`. Un registro de `archive` puede aportar el cuerpo,
+pero nunca debe sobrescribir el estado de lectura de una fila viva. La primera
+creación de la ventana debe ejecutar `Refresh` explícitamente porque un frame de
+WoW puede nacer visible y no disparar `OnShow` al llamar después a `Show()`.
 
 ## Pruebas obligatorias
 
@@ -94,8 +104,11 @@ Ejecutar además contra una copia o mediante carga en memoria del SavedVariables
 
 Los tests usan Lua 5.1 y mocks de eventos/APIs de WoW. Deben cubrir búsqueda sin
 reino, más de 500 enviados, migración idempotente, mensajes idénticos, timestamps
-iguales, captura de cuerpo, variantes de `RE`, límites de escritura y
-borrado/restauración sin reducción de tablas.
+iguales, captura de cuerpo, variantes de `RE`, límites de escritura,
+borrado/restauración sin reducción de tablas y estas regresiones de lectura:
+un escaneo no solicita cuerpos no leídos, renderizar no cambia `wasRead`, el
+estado vivo prevalece sobre `archive`, Leer/Ver sí captura y la ventana refresca
+en su primera apertura.
 
 ## Flujo de releases e instalación
 
@@ -103,14 +116,24 @@ Los paquetes instalables contienen solo `Cartas/Cartas.lua`,
 `Cartas/Cartas.toc` y `Cartas/README.txt`. Los archivos versionados de release,
 backups y SavedVariables son privados y nunca se publican.
 
-Generar un paquete desde el repositorio canónico:
+Procedimiento obligatorio para cada release desde el repositorio canónico:
 
-`powershell -ExecutionPolicy Bypass -File .\tools\New-CartasRelease.ps1 -Label ETIQUETA`
+1. Actualizar la versión en `Cartas.toc` y `README.txt`.
+2. Ejecutar `tests/run.ps1` y revisar que no haya fixtures ni rutas reales.
+3. Ejecutar `powershell -ExecutionPolicy Bypass -File .\tools\New-CartasRelease.ps1`.
+4. El script crea un ZIP versionado privado bajo `Releases/` y sustituye la copia
+   raíz `Wow-Midnight-Cartas-Last-Version.zip` con los tres runtime files.
+5. Ejecutar `powershell -ExecutionPolicy Bypass -File .\tools\Test-PublicRepository.ps1`.
+6. Comprobar `git status`: versionar la nueva copia raíz de Last-Version, nunca
+   el ZIP privado de `Releases/`, un backup ni una SavedVariable.
+7. Hacer commit y push únicamente de `main`. Verificar el enlace público de
+   descarga tras el push.
 
-Cada release actualiza `Wow-Midnight-Cartas-Last-Version.zip` en la raíz pública.
-Es el único ZIP que puede seguir Git y nunca debe contener `.git`, tests,
-documentos de desarrollo ni SavedVariables. Antes de publicar, ejecutar
-`tools/Test-PublicRepository.ps1`.
+`-Label` se reserva para calificadores locales adicionales. `-Force` solo se usa
+si se regenera deliberadamente la misma versión. Last-Version se reemplaza en
+cada release: no se renombran ni acumulan otros ZIP públicos en Git. Es el único
+ZIP que puede seguir Git y nunca debe contener `.git`, tests, documentos de
+desarrollo ni SavedVariables.
 
 ## Limitaciones conocidas
 

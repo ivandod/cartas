@@ -36,5 +36,11 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1
 Antes de publicar:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\New-CartasRelease.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\Test-PublicRepository.ps1
 ```
+
+El primer comando guarda el paquete versionado en `Releases/` (ignorado por
+Git) y reemplaza `Wow-Midnight-Cartas-Last-Version.zip`. En cada release hay que
+incluir en el commit esa copia raíz actualizada; nunca se publican los ZIP
+versionados, backups ni SavedVariables. El flujo completo está en `AGENTS.md`.

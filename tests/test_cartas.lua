@@ -118,6 +118,7 @@ test("conversation history groups threads under each participant", function()
     assertEqual(#participants[2].threads, 2)
     assertEqual(participants[2].threads[1].subject, "Tema principal")
     assertEqual(participants[2].threads[2].subject, "Tema archivado")
+    assertEqual(participants[2].threads[2].newCount, 1)
     assertEqual(#participants[2].threads[2].messages, 2)
 
     local filtered = API.BuildParticipantGroups(participants[2].threads[2].messages, "bri")
@@ -189,8 +190,8 @@ end)
 test("identical incoming letters remain separate", function()
     resetDB()
     Mock.inbox = {
-        {sender = "Arianna-TestRealm", subject = "Igual", body = "Mismo texto", daysLeft = 29},
-        {sender = "Arianna-TestRealm", subject = "Igual", body = "Mismo texto", daysLeft = 29 - (10 / 86400)},
+        {sender = "Arianna-TestRealm", subject = "Igual", body = "Mismo texto", daysLeft = 29, wasRead = true},
+        {sender = "Arianna-TestRealm", subject = "Igual", body = "Mismo texto", daysLeft = 29 - (10 / 86400), wasRead = true},
     }
     Mock.trigger("MAIL_INBOX_UPDATE")
     assertEqual(#CartasDB.archive, 2)
@@ -265,10 +266,117 @@ end)
 test("loaded Blizzard bodies are archived during inbox scan", function()
     resetDB()
     Mock.inbox = {
-        {sender = "Arianna-TestRealm", subject = "Abierta", body = "Ya cargada", daysLeft = 27},
+        {sender = "Arianna-TestRealm", subject = "Abierta", body = "Ya cargada", daysLeft = 27, wasRead = true},
     }
     API.ScanInbox()
     assertEqual(CartasDB.archive[1].body, "Ya cargada")
+end)
+
+test("background scan never opens or marks unread inbox mail", function()
+    resetDB()
+    Mock.inbox = {
+        {sender = "Arianna-TestRealm", subject = "Pendiente", body = "Texto privado", daysLeft = 26, wasRead = false},
+    }
+
+    Mock.trigger("MAIL_INBOX_UPDATE")
+
+    assertEqual(Mock.getInboxTextCalls, 0)
+    assertTrue(not Mock.inbox[1].wasRead)
+    assertTrue(not CartasDB.archive[1].wasRead)
+    assertEqual(CartasDB.archive[1].body, "")
+end)
+
+test("rendering the live inbox only reads headers", function()
+    resetDB()
+    Mock.inbox = {
+        {sender = "Arianna-TestRealm", subject = "Sin abrir", body = "No solicitar", daysLeft = 25, wasRead = false},
+    }
+
+    local live = API.GetLiveInbox()
+
+    assertEqual(#live, 1)
+    assertEqual(Mock.getInboxTextCalls, 0)
+    assertTrue(API.IsLiveInboxMailNew(live[1]))
+    assertTrue(not Mock.inbox[1].wasRead)
+end)
+
+test("live Blizzard unread state wins over stale archived read state", function()
+    resetDB()
+    local staleArchive = {wasRead = true}
+    local live = {wasRead = false}
+
+    assertTrue(staleArchive.wasRead)
+    assertTrue(API.IsLiveInboxMailNew(live))
+    assertTrue(not API.IsLiveInboxMailNew({wasRead = true}))
+end)
+
+test("explicit capture is the action that reads and stores an unread body", function()
+    resetDB()
+    Mock.inbox = {
+        {sender = "Arianna-TestRealm", subject = "Lectura explícita", body = "Contenido", daysLeft = 24, wasRead = false},
+    }
+    API.ScanInbox()
+    assertEqual(Mock.getInboxTextCalls, 0)
+
+    local captured
+    API.CaptureInboxMail(1, function(mail) captured = mail end)
+
+    assertEqual(Mock.getInboxTextCalls, 1)
+    assertTrue(Mock.inbox[1].wasRead)
+    assertTrue(captured.wasRead)
+    assertEqual(captured.body, "Contenido")
+    assertTrue(not API.IsMailNew(Mock.player, captured))
+end)
+
+test("archived read metadata prevents false new conversation badges", function()
+    local unread = incoming(1, Mock.now, "Pendiente")
+    unread.wasRead = false
+    local read = incoming(2, Mock.now + 1, "Revisada")
+    read.wasRead = true
+    resetDB({
+        mails = {}, incoming = {}, archive = {unread, read},
+        seen = {}, deletedArchive = {}, nextSequence = 2,
+    })
+
+    local correspondence = API.GetAllCorrespondence()
+
+    assertTrue(not correspondence[1].isNew)
+    assertTrue(correspondence[2].isNew)
+end)
+
+test("expanded state defaults are deterministic and remain overridable", function()
+    local state = {}
+    assertTrue(API.ResolveExpandedState(state, "inbox", true))
+    assertTrue(not API.ResolveExpandedState(state, "thread", false))
+    state.inbox = false
+    state.thread = true
+    assertTrue(not API.ResolveExpandedState(state, "inbox", true))
+    assertTrue(API.ResolveExpandedState(state, "thread", false))
+end)
+
+test("already visible history frames refresh on their first initialization", function()
+    local refreshCount = 0
+    local visible = {scripts = {}}
+    function visible:SetScript(name, callback) self.scripts[name] = callback end
+    function visible:IsShown() return true end
+    function visible:Show() error("visible frame must refresh directly") end
+
+    API.ShowFrameWithInitialRefresh(visible, function() refreshCount = refreshCount + 1 end)
+
+    assertEqual(refreshCount, 1)
+    assertTrue(type(visible.scripts.OnShow) == "function")
+end)
+
+test("hidden history frames refresh exactly once through OnShow", function()
+    local refreshCount = 0
+    local hidden = {scripts = {}}
+    function hidden:SetScript(name, callback) self.scripts[name] = callback end
+    function hidden:IsShown() return false end
+    function hidden:Show() self.scripts.OnShow(self) end
+
+    API.ShowFrameWithInitialRefresh(hidden, function() refreshCount = refreshCount + 1 end)
+
+    assertEqual(refreshCount, 1)
 end)
 
 test("system and Customer Support mail never become conversations", function()

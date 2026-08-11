@@ -1,4 +1,4 @@
-# Cartas v1.9.0-rc6
+# Cartas v1.9.0-rc7
 
 Addon para World of Warcraft Retail / Midnight que conserva la correspondencia
 enviada y recibida y la presenta como conversaciones.
@@ -16,6 +16,10 @@ enviada y recibida y la presenta como conversaciones.
 El cuerpo de una carta recibida solo puede guardarse después de que Blizzard lo
 haya cargado. Cartas conserva siempre la cabecera, pero una carta que caduque sin
 haberse abierto puede quedarse sin cuerpo porque la API de WoW no lo entrega.
+
+Cartas nunca solicita en segundo plano el cuerpo de una carta que Blizzard
+marque como no leída. Abrir o actualizar la ventana conserva el estado NUEVA;
+solo Leer/Ver o abrirla desde el buzón de Blizzard solicita el cuerpo.
 
 ## Búsqueda
 
@@ -38,12 +42,16 @@ Las respuestas nuevas mantienen el mismo hilo porque la conversación usa el
 asunto base y el interlocutor. Dentro del hilo, las cartas se muestran por fecha
 y secuencia; la cantidad histórica de prefijos `RE:` no altera el orden.
 
-## Interlocutores desplegables
+## Secciones desplegables
 
 El historial agrupa primero por personaje y después por conversación. Los
 interlocutores aparecen contraídos inicialmente y muestran cuántas conversaciones,
-cartas y mensajes nuevos contienen. Al buscar un personaje, los resultados se
-abren automáticamente; el correo del buzón actual continúa en su sección propia.
+cartas y mensajes nuevos contienen. Cada conversación también se puede desplegar
+por separado y muestra su número de cartas y mensajes nuevos. Al buscar un
+personaje, sus resultados se abren automáticamente.
+
+BUZÓN ACTUAL es desplegable y empieza abierto. La ventana carga sus correos en la
+primera apertura sin tener que pulsar Buscar.
 
 ## Uso
 

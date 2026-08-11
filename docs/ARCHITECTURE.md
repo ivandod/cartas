@@ -46,10 +46,12 @@ para no truncarlo ni separarlo de su conversación.
 asociación uno-a-uno por propietario, remitente, asunto y timestamp. La fila del
 buzón es solo desempate porque cambia cuando llega correo nuevo.
 
-Si `GetInboxText` ya devuelve contenido, el escaneo lo conserva. Si no,
-`CaptureInboxMail` solicita abrir la fila, reintenta durante unos seis segundos y
-completa el registro. Dos mensajes con cuerpo idéntico no se fusionan solo por
-esa coincidencia.
+El escaneo solo llama a `GetInboxText` cuando la cabecera ya tiene
+`wasRead=true`; solicitar el cuerpo de una carta no leída puede cambiar su estado
+en Blizzard. Para una carta pendiente se archiva la cabecera vacía y
+`CaptureInboxMail`, ejecutado por Leer/Ver, solicita abrir la fila, reintenta
+durante unos seis segundos y completa el registro. Dos mensajes con cuerpo
+idéntico no se fusionan solo por esa coincidencia.
 
 ## Identidad y límites de la API
 
@@ -73,8 +75,14 @@ respuestas nuevas normalizan la cadena a un único prefijo.
 interlocutor → conversaciones → cartas. Los interlocutores y sus conversaciones
 se ordenan por actividad reciente; las cartas de cada hilo mantienen orden
 ascendente. La expansión es estado efímero de la ventana y no escribe en
-`CartasDB`. Sin búsqueda, los interlocutores empiezan contraídos; una búsqueda
-abre sus coincidencias automáticamente.
+`CartasDB`. Sin búsqueda, interlocutores y conversaciones empiezan contraídos;
+una búsqueda abre sus coincidencias automáticamente. `BUZÓN ACTUAL` es otra
+sección desplegable y empieza abierta.
+
+Las filas de `BUZÓN ACTUAL` derivan NUEVA/LEÍDA exclusivamente del `wasRead` de
+la cabecera viva. El archivo puede aportar un cuerpo ya conservado, pero su
+estado histórico no modifica esa etiqueta. La inicialización llama a `Refresh`
+incluso si el frame nace visible y, después, `OnShow` mantiene las reaperturas.
 
 Antes de crear conversaciones, `IsConversationMail` excluye recibidos con
 `canReply == false` y mensajes con `isGM == true`. Es la misma clasificación que
