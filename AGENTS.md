@@ -22,6 +22,12 @@ del buzón. La integridad del historial tiene prioridad sobre eliminar duplicado
 7. Una carta repetida puede ser legítima. Al asociar cuerpo y cabecera se usa
    timestamp aproximado y fila solo como desempate uno-a-uno.
 
+La restricción de WoW cerrado se aplica únicamente a SavedVariables. Los tres
+archivos del addon (`Cartas.lua`, `Cartas.toc` y `README.txt`) pueden
+sobrescribirse con WoW abierto; después se solicita `/reload` para cargar la
+nueva versión. No comprobar ni bloquear una instalación de código por la
+presencia del proceso de WoW.
+
 ## Modelo persistente
 
 - `CartasDB.mails`: almacén autoritativo de enviados.
@@ -134,6 +140,12 @@ si se regenera deliberadamente la misma versión. Last-Version se reemplaza en
 cada release: no se renombran ni acumulan otros ZIP públicos en Git. Es el único
 ZIP que puede seguir Git y nunca debe contener `.git`, tests, documentos de
 desarrollo ni SavedVariables.
+
+Para instalar el paquete basta con sobrescribir los tres runtime files en
+`Interface/AddOns/Cartas`, aunque WoW esté abierto, y ejecutar `/reload`. Hacer
+backup del código anterior sigue siendo recomendable para rollback, pero no se
+requiere comprobar ni cerrar el proceso del juego. Nunca aplicar esta regla a
+una restauración o sustitución de SavedVariables.
 
 ## Limitaciones conocidas
 

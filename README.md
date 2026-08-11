@@ -12,12 +12,13 @@ ejecutar el addon.
 
 ## Instalar
 
-1. Cierra World of Warcraft.
-2. Extrae el ZIP dentro de `Interface/AddOns`.
-3. Confirma que exista `Interface/AddOns/Cartas/Cartas.toc`.
-4. Inicia el juego y comprueba que Cartas esté habilitado.
+1. Extrae el ZIP dentro de `Interface/AddOns`, sobrescribiendo la versión
+   anterior. WoW puede permanecer abierto.
+2. Confirma que exista `Interface/AddOns/Cartas/Cartas.toc`.
+3. Dentro del juego, ejecuta `/reload` para cargar la versión nueva.
 
 Actualizar el addon no requiere reemplazar las SavedVariables ni el historial.
+Para restaurar una SavedVariable sí debe cerrarse WoW y hacerse antes un backup.
 
 ## Privacidad
 

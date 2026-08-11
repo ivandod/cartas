@@ -32,11 +32,15 @@ de forma deliberada la misma versión.
 
 ## Instalar o volver atrás
 
-1. Cerrar WoW por completo.
-2. Hacer una copia del directorio activo `Interface/AddOns/Cartas`.
-3. Hacer una copia independiente de la SavedVariable actual.
-4. Extraer el ZIP sobre `Interface/AddOns`, sobrescribiendo los tres archivos.
+1. Hacer una copia del directorio activo `Interface/AddOns/Cartas`.
+2. Extraer el ZIP sobre `Interface/AddOns`, sobrescribiendo los tres archivos.
+3. WoW puede permanecer abierto; no hace falta comprobar su proceso.
+4. Ejecutar `/reload` dentro del juego para cargar el código nuevo.
 5. No tocar `WTF` durante un cambio normal de versión.
+
+El backup independiente de SavedVariables es recomendable antes de una release,
+pero copiar código no lo modifica. Cerrar WoW solo es obligatorio si se va a
+sustituir o restaurar un fichero dentro de `WTF`.
 
 ## Restaurar datos
 
