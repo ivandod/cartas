@@ -11,3 +11,6 @@ WTF/
 *.bak
 *.log
 *.png
+.env
+.env.*
+*.token

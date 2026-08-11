@@ -1,0 +1,52 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: curseforge-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      CURSEFORGE_PROJECT_ID: "1648457"
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+
+      - name: Run unit tests
+        run: lua5.1 tests/test_cartas.lua
+
+      - name: Audit public repository and ZIP
+        shell: pwsh
+        run: ./tools/Test-PublicRepository.ps1
+
+      - name: Verify CurseForge secret
+        shell: pwsh
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CF_API_KEY)) {
+            throw "Repository secret CF_API_KEY is not configured."
+          }
+
+      - name: Publish audited ZIP to CurseForge
+        shell: pwsh
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+        run: >-
+          ./tools/Publish-CurseForge.ps1
+          -ProjectId $env:CURSEFORGE_PROJECT_ID
+          -Tag "${{ github.ref_name }}"

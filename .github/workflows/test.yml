@@ -16,3 +16,8 @@ jobs:
       - name: Audit public repository
         shell: pwsh
         run: ./tools/Test-PublicRepository.ps1
+      - name: Validate CurseForge release configuration
+        shell: pwsh
+        run: |
+          $version = (Select-String -LiteralPath ./Cartas.toc -Pattern '^## Version:\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+          ./tools/Publish-CurseForge.ps1 -Tag "v$version" -DryRun

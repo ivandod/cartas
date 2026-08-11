@@ -43,6 +43,9 @@ try {
         if ($text -match '(?i)Users[\\/][^<>\\/\s]+') {
             throw "User profile path found in tracked file: $path"
         }
+        if ($text -match '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b') {
+            throw "Potential UUID token found in tracked file: $path"
+        }
 
         foreach ($match in [regex]::Matches($text, '(?i)WTF[\\/]Account[\\/]([^\\/\s`"'']+)')) {
             if ($match.Groups[1].Value -ne '<cuenta>') {

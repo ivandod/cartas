@@ -44,4 +44,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\Test-PublicRepository.ps1
 El primer comando guarda el paquete versionado en `Releases/` (ignorado por
 Git) y reemplaza `Wow-Midnight-Cartas-Last-Version.zip`. En cada release hay que
 incluir en el commit esa copia raíz actualizada; nunca se publican los ZIP
-versionados, backups ni SavedVariables. El flujo completo está en `AGENTS.md`.
+versionados, backups ni SavedVariables.
+
+Las publicaciones de CurseForge se activan mediante un tag que coincida con la
+versión del TOC. El workflow ejecuta de nuevo tests y auditoría antes de subir el
+mismo ZIP público. El flujo completo está en `AGENTS.md` y
+`docs/CURSEFORGE.md`.

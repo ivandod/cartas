@@ -144,13 +144,34 @@ Procedimiento obligatorio para cada release desde el repositorio canónico:
 6. Comprobar `git status`: versionar la nueva copia raíz de Last-Version, nunca
    el ZIP privado de `Releases/`, un backup ni una SavedVariable.
 7. Hacer commit y push únicamente de `main`. Verificar el enlace público de
-   descarga tras el push.
+   descarga tras el push y esperar a que CI termine correctamente.
+8. Cuando la versión deba publicarse en CurseForge, crear un tag anotado cuyo
+   nombre sea `v` seguido exactamente por `## Version` y subir solo ese tag.
 
 `-Label` se reserva para calificadores locales adicionales. `-Force` solo se usa
 si se regenera deliberadamente la misma versión. Last-Version se reemplaza en
 cada release: no se renombran ni acumulan otros ZIP públicos en Git. Es el único
 ZIP que puede seguir Git y nunca debe contener `.git`, tests, documentos de
 desarrollo ni SavedVariables.
+
+## Publicación en CurseForge
+
+El proyecto público es `1648457`. `Cartas.toc` debe conservar
+`## X-Curse-Project-ID: 1648457`. El workflow `.github/workflows/release.yml`
+solo se activa con tags `v*`, vuelve a ejecutar tests y auditoría y publica el
+ZIP raíz ya auditado mediante la API oficial. No crear tags mientras el proyecto
+de CurseForge siga en revisión.
+
+El tag y `## Version` deben coincidir exactamente: por ejemplo, la versión
+`1.9.0-rc8` usa el tag anotado `v1.9.0-rc8`. Tags con `alpha` publican Alpha;
+tags con `beta` o `rc` publican Beta; los demás publican Release. No publicar
+cada commit y no reutilizar ni mover un tag ya publicado.
+
+El token vive en GitHub únicamente como repository secret `CF_API_KEY`. Nunca
+escribir su valor en workflows, commits, `.env`, incidencias o logs. El workflow
+solo inyecta el secret en la validación y en el paso de subida. La copia local
+privada se gestiona fuera del repositorio. El procedimiento completo está en
+`docs/CURSEFORGE.md`.
 
 Para instalar el paquete basta con sobrescribir los tres runtime files en
 `Interface/AddOns/Cartas`, aunque WoW esté abierto, y ejecutar `/reload`. Hacer
