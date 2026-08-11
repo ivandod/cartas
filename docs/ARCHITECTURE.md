@@ -46,6 +46,17 @@ para no truncarlo ni separarlo de su conversación.
 asociación uno-a-uno por propietario, remitente, asunto y timestamp. La fila del
 buzón es solo desempate porque cambia cuando llega correo nuevo.
 
+El correo normal usa un horizonte de 31 días porque Retail puede devolver
+`daysLeft` en el rango `30.x`. Usar 30 genera timestamps futuros y agrupa
+visualmente todas las enviadas antes de las recibidas. La estimación limita el
+remanente al horizonte para que nunca avance respecto al reloj del escaneo.
+
+`RepairImpossibleFutureTimestamps` migra registros de versiones anteriores solo
+cuando `timestamp > _firstSeenAt + 300`. Resta el día introducido por la fórmula
+antigua, limita el resultado a la primera observación y conserva los valores
+anteriores en `_timestampBeforeExpiryFix` y `_dateBeforeExpiryFix`. Es una
+corrección idempotente y no destructiva.
+
 El escaneo solo llama a `GetInboxText` cuando la cabecera ya tiene
 `wasRead=true`; solicitar el cuerpo de una carta no leída puede cambiar su estado
 en Blizzard. Para una carta pendiente se archiva la cabecera vacía y
@@ -107,4 +118,6 @@ producen dos conversaciones distintas.
 persistir. `tests/test_cartas.lua` ejecuta regresiones en Lua 5.1.
 `tests/validate_saved_variables.lua` carga un SavedVariables en memoria, toma una
 instantánea de campos y confirma que inicialización, migración y lectura no
-reducen tablas ni cambian campos previos. Ningún test escribe SavedVariables.
+reducen tablas ni cambian campos previos. La única mutación admitida es la
+reparación de timestamp cuando los valores originales quedan preservados en sus
+campos de respaldo. Ningún test escribe SavedVariables.

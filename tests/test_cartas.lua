@@ -92,6 +92,78 @@ test("thread order remains chronological when reply prefixes reset", function()
     assertEqual(chain[4].subject, "RE: Tema principal")
 end)
 
+test("normal inbox timestamps with 30.x days remaining never land in the future", function()
+    resetDB()
+    local timestamp = API.EstimateMailTimestamp(30.5, 0, Mock.now)
+    assertEqual(timestamp, Mock.now - 43200)
+    assertTrue(timestamp <= Mock.now)
+end)
+
+test("incoming and outgoing thread messages interleave by reconstructed timestamp", function()
+    resetDB()
+    Mock.inbox = {
+        {
+            sender = "Arianna-TestRealm",
+            subject = "Plan compartido",
+            body = "",
+            daysLeft = 30.5,
+            wasRead = false,
+            canReply = true,
+        },
+    }
+    API.ScanInbox()
+    local incomingTimestamp = CartasDB.archive[1].timestamp
+    CartasDB.mails = {
+        {
+            sequence = 2,
+            owner = Mock.player,
+            sender = Mock.player,
+            recipient = "Arianna-TestRealm",
+            subject = "Plan compartido",
+            body = "Antes",
+            timestamp = incomingTimestamp - 60,
+        },
+        {
+            sequence = 3,
+            owner = Mock.player,
+            sender = Mock.player,
+            recipient = "Arianna-TestRealm",
+            subject = "RE: Plan compartido",
+            body = "Después",
+            timestamp = incomingTimestamp + 60,
+        },
+    }
+
+    local participants = API.BuildParticipantGroups(API.GetAllCorrespondence())
+    local chain = API.BuildThreadChain(participants[1].threads[1].messages)
+
+    assertEqual(#chain, 3)
+    assertEqual(chain[1].direction, "out")
+    assertEqual(chain[2].direction, "in")
+    assertEqual(chain[3].direction, "out")
+end)
+
+test("future archived timestamps are repaired without losing original metadata", function()
+    local broken = incoming(1, Mock.now + 43200, "Conservar")
+    broken.date = os.date("%Y-%m-%d %H:%M:%S", broken.timestamp)
+    broken._firstSeenAt = Mock.now
+    broken.customMetadata = "intacto"
+    local originalTimestamp = broken.timestamp
+    local originalDate = broken.date
+    resetDB({
+        mails = {}, incoming = {}, archive = {broken},
+        seen = {}, deletedArchive = {}, nextSequence = 1,
+    })
+
+    assertEqual(API.RepairImpossibleFutureTimestamps(), 1)
+    assertEqual(#CartasDB.archive, 1)
+    assertEqual(CartasDB.archive[1].timestamp, Mock.now - 43200)
+    assertEqual(CartasDB.archive[1]._timestampBeforeExpiryFix, originalTimestamp)
+    assertEqual(CartasDB.archive[1]._dateBeforeExpiryFix, originalDate)
+    assertEqual(CartasDB.archive[1].customMetadata, "intacto")
+    assertEqual(API.RepairImpossibleFutureTimestamps(), 0)
+end)
+
 test("reset reply subject keeps the same participant thread", function()
     resetDB()
     local historical = API.BuildThreadKey("RE: RE: RE: Tema archivado", "Brina")

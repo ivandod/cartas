@@ -21,6 +21,9 @@ del buzón. La integridad del historial tiene prioridad sobre eliminar duplicado
    memoria es válido; escribirlo o sustituirlo requiere WoW cerrado y backup.
 7. Una carta repetida puede ser legítima. Al asociar cuerpo y cabecera se usa
    timestamp aproximado y fila solo como desempate uno-a-uno.
+8. WoW puede devolver `daysLeft` en el rango `30.x` para correo normal. La
+   estimación debe usar 31 días y nunca producir un timestamp posterior al reloj
+   de observación.
 
 La restricción de WoW cerrado se aplica únicamente a SavedVariables. Los tres
 archivos del addon (`Cartas.lua`, `Cartas.toc` y `README.txt`) pueden
@@ -87,6 +90,12 @@ complementarias; no elevar estos límites aunque `SendMail` acepte la llamada.
 No usar la cantidad de `RE:` como orden estructural: `BuildReplySubject` la
 reinicia a un único prefijo y una respuesta reciente quedaría fuera de lugar.
 
+`RepairImpossibleFutureTimestamps` corrige únicamente recibidos cuyo timestamp
+sea posterior en más de cinco minutos a `_firstSeenAt`, una situación imposible
+causada por el horizonte antiguo de 30 días. Antes de cambiarlo debe conservar
+los valores en `_timestampBeforeExpiryFix` y `_dateBeforeExpiryFix`. La reparación
+es idempotente, no cambia cuerpos ni claves y nunca reduce almacenes.
+
 La vista histórica se construye con `BuildParticipantGroups`: interlocutor,
 conversaciones y cartas. Los interlocutores y conversaciones empiezan contraídos
 salvo al buscar. `BUZÓN ACTUAL` empieza expandido. El estado desplegado pertenece
@@ -114,7 +123,9 @@ iguales, captura de cuerpo, variantes de `RE`, límites de escritura,
 borrado/restauración sin reducción de tablas y estas regresiones de lectura:
 un escaneo no solicita cuerpos no leídos, renderizar no cambia `wasRead`, el
 estado vivo prevalece sobre `archive`, Leer/Ver sí captura y la ventana refresca
-en su primera apertura.
+en su primera apertura. Debe existir además una regresión con `daysLeft=30.x`
+que intercale una recibida entre dos enviadas, y otra que verifique la reparación
+idempotente conservando fecha, timestamp y metadatos originales.
 
 ## Flujo de releases e instalación
 

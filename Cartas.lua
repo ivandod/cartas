@@ -5,6 +5,8 @@ CartasDB = CartasDB or {}
 local MAIL_SUBJECT_MAX_LETTERS = 64
 local MAIL_BODY_MAX_LETTERS = 500
 local MAIL_REPLY_PREFIX = "RE: "
+local NORMAL_MAIL_EXPIRY_DAYS = 31
+local COD_MAIL_EXPIRY_DAYS = 3
 
 -- Migrate data from the previous addon name without losing existing letters.
 if CorrespondenciaDB and not CartasDB.migratedFromCorrespondencia then
@@ -58,13 +60,42 @@ local function NormalizeMailSubject(subject)
 end
 
 local function EstimateMailTimestamp(daysLeft, CODAmount, referenceTime)
-    local expiryDays = (CODAmount and CODAmount > 0) and 3 or 30
+    -- Retail can report newly received normal mail with daysLeft in the 30.x
+    -- range. Treating 30 as the full horizon reconstructs a timestamp in the
+    -- future and separates incoming replies from outgoing messages by a day.
+    local expiryDays = (CODAmount and CODAmount > 0) and COD_MAIL_EXPIRY_DAYS or NORMAL_MAIL_EXPIRY_DAYS
     local now = referenceTime or NowTimestamp()
     local timestamp = now
     if type(daysLeft) == "number" then
-        timestamp = now - ((expiryDays - daysLeft) * 86400)
+        local remainingDays = math.max(0, math.min(daysLeft, expiryDays))
+        timestamp = now - ((expiryDays - remainingDays) * 86400)
     end
     return math.floor(timestamp + 0.5)
+end
+
+local function RepairImpossibleFutureTimestamps()
+    EnsureDB()
+    local repaired = 0
+
+    for _, mail in ipairs(CartasDB.archive) do
+        local timestamp = tonumber(mail.timestamp)
+        local firstSeenAt = tonumber(mail._firstSeenAt)
+
+        -- A received letter cannot have been sent after Cartas first observed
+        -- it. Versions through rc7 used a 30-day horizon, so affected records
+        -- are exactly one day ahead of the corrected 31-day estimate.
+        if timestamp and firstSeenAt and timestamp > firstSeenAt + 300 then
+            local corrected = math.min(timestamp - 86400, firstSeenAt)
+            mail._timestampBeforeExpiryFix = mail._timestampBeforeExpiryFix or timestamp
+            mail._dateBeforeExpiryFix = mail._dateBeforeExpiryFix or mail.date
+            mail._timestampRepair = mail._timestampRepair or "normal-expiry-31"
+            mail.timestamp = corrected
+            mail.date = date("%Y-%m-%d %H:%M:%S", corrected)
+            repaired = repaired + 1
+        end
+    end
+
+    return repaired
 end
 
 -- Blizzard does not expose a persistent mail ID through GetInboxHeaderInfo().
@@ -370,6 +401,7 @@ end
 local function ScanInbox()
     EnsureDB()
     EnsureArchive()
+    RepairImpossibleFutureTimestamps()
     AuditArchiveDuplicates()
     if not GetInboxNumItems or not GetInboxHeaderInfo then return end
     local count = GetInboxNumItems() or 0
@@ -531,6 +563,7 @@ local function GetAllCorrespondence()
     -- Incoming mail comes from the persistent archive, NOT the live Blizzard inbox.
     -- Once archived, it remains visible even after Blizzard deletes/expirs the mail.
     EnsureArchive()
+    RepairImpossibleFutureTimestamps()
     AuditArchiveDuplicates()
     for _, mail in ipairs(CartasDB.archive) do
         local mailOwner = CleanName(mail.owner or mail.recipient or "")
@@ -1920,6 +1953,8 @@ if _G and _G.CartasTestMode then
         NormalizeSearchName = NormalizeSearchName,
         MailMatchesPerson = MailMatchesPerson,
         FindIncomingRecord = FindIncomingRecord,
+        EstimateMailTimestamp = EstimateMailTimestamp,
+        RepairImpossibleFutureTimestamps = RepairImpossibleFutureTimestamps,
         DeleteHistoryMail = DeleteHistoryMail,
         DeleteAllHistory = DeleteAllHistory,
         RestoreAllHistory = RestoreAllHistory,
@@ -1933,5 +1968,7 @@ local login = CreateFrame("Frame")
 login:RegisterEvent("PLAYER_LOGIN")
 login:SetScript("OnEvent", function()
     EnsureDB()
+    EnsureArchive()
+    RepairImpossibleFutureTimestamps()
     PrintLine("Cargado. Tus cartas enviadas se guardarán automáticamente.")
 end)

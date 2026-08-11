@@ -65,7 +65,11 @@ for _, name in ipairs(stores) do
     for index, old in ipairs(before[name].records) do
         local record = assert(current[index], name .. " record " .. index .. " disappeared")
         for key, value in pairs(old) do
-            assert(record[key] == value, name .. " record " .. index .. " changed field " .. tostring(key))
+            local preservedByTimestampRepair =
+                (key == "timestamp" and record._timestampBeforeExpiryFix == value) or
+                (key == "date" and record._dateBeforeExpiryFix == value)
+            assert(record[key] == value or preservedByTimestampRepair,
+                name .. " record " .. index .. " changed field " .. tostring(key))
         end
     end
 end

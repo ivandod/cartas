@@ -1,4 +1,4 @@
-# Cartas v1.9.0-rc7
+# Cartas v1.9.0-rc8
 
 Addon para World of Warcraft Retail / Midnight que conserva la correspondencia
 enviada y recibida y la presenta como conversaciones.
@@ -41,6 +41,17 @@ para no consumir el asunto con cadenas como `RE: RE: RE:`.
 Las respuestas nuevas mantienen el mismo hilo porque la conversación usa el
 asunto base y el interlocutor. Dentro del hilo, las cartas se muestran por fecha
 y secuencia; la cantidad histórica de prefijos `RE:` no altera el orden.
+
+## Orden cronológico
+
+Las cartas enviadas y recibidas se intercalan por timestamp dentro de cada
+conversación. WoW puede informar `daysLeft` por encima de 30 para correo normal;
+Cartas usa el horizonte real de 31 días para que una recibida nueva nunca quede
+fechada en el futuro.
+
+Al cargar esta versión se corrigen los timestamps futuros creados por versiones
+anteriores. La fecha y el timestamp previos se conservan como metadatos de
+respaldo; la reparación no elimina ni fusiona cartas.
 
 ## Secciones desplegables
 
