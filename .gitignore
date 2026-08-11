@@ -1,0 +1,13 @@
+/Releases/
+/Backups/
+/.codex/
+*.zip
+!Wow-Midnight-Cartas-Last-Version.zip
+
+# WoW account data and local diagnostics must never be published.
+SavedVariables/
+**/SavedVariables/*.lua
+WTF/
+*.bak
+*.log
+*.png
