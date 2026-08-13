@@ -30,11 +30,11 @@ Solo se integra y publica la versión que el propietario autorice expresamente.
 4. Hacer commit y push de `main`; esperar a que CI termine correctamente.
 5. Crear un tag anotado que coincida exactamente con la versión:
 
-   `git tag -a v1.10.0 -m "Cartas 1.10.0"`
+   `git tag -a v1.10.1 -m "Cartas 1.10.1"`
 
 6. Subir el tag:
 
-   `git push origin v1.10.0`
+   `git push origin v1.10.1`
 
 El workflow repite tests y auditoría, valida que el ZIP contenga solo los tres
 runtime files y lo sube mediante la API oficial. No se debe volver a ejecutar

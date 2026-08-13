@@ -1,4 +1,4 @@
-# Cartas v1.10.0
+# Cartas v1.10.1
 
 Addon para World of Warcraft Retail / Midnight que conserva la correspondencia
 enviada y recibida y la presenta como conversaciones.
@@ -34,7 +34,7 @@ asunto base y el interlocutor coinciden.
 
 ## Límites de escritura
 
-La ventana de escritura replica los límites de WoW 12.0.7: 64 caracteres para
+La ventana de escritura replica los límites de WoW 12.1.0: 64 caracteres para
 el asunto y 500 para el cuerpo. Ambos campos muestran un contador y dejan de
 aceptar texto al alcanzar su máximo. Responder reutiliza un único prefijo `RE:`
 para no consumir el asunto con cadenas como `RE: RE: RE:`.

@@ -1,5 +1,5 @@
 local ADDON_NAME = ...
--- v1.10.0: visual rework, compact sizing and guarded live-mail deletion.
+-- v1.10.1: WoW 12.1.0 compatibility metadata.
 CartasDB = CartasDB or {}
 
 local MAIL_SUBJECT_MAX_LETTERS = 64

@@ -83,7 +83,7 @@ real, aunque parezcan anonimizables.
 
 Al responder, usar siempre `BuildReplySubject`: no concatenar `RE:` directamente.
 El asunto debe respetar 64 caracteres y el cuerpo 500, igual que MailFrame en
-WoW 12.0.7. Los contadores visuales y `ValidateOutgoingMailText` son defensas
+WoW 12.1.0. Los contadores visuales y `ValidateOutgoingMailText` son defensas
 complementarias; no elevar estos límites aunque `SendMail` acepte la llamada.
 
 `BuildThreadChain` debe ordenar cronológicamente por `timestamp` y `sequence`.

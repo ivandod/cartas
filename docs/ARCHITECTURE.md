@@ -6,7 +6,7 @@ Cartas es un addon monolítico de Lua 5.1. `Cartas.lua` contiene persistencia,
 adaptación de la API de correo, composición y UI. `Cartas.toc` declara dos
 SavedVariables por cuenta: `CartasDB` y el nombre legado `CorrespondenciaDB`.
 
-La instalación auditada es WoW Retail `12.0.7.68974` con interfaz `120007`.
+La instalación auditada es WoW Retail `12.1.0.69283` con interfaz `120100`.
 
 ## Almacenes
 
