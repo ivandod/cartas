@@ -14,8 +14,8 @@ del buzón. La integridad del historial tiene prioridad sobre eliminar duplicado
    suficiente para borrar un duplicado. Blizzard no expone un ID persistente.
 3. Las migraciones deben ser aditivas, idempotentes y conservar campos
    desconocidos de versiones anteriores.
-4. Borrar desde la interfaz es borrado lógico mediante `hidden`; Restaurar debe
-   revertirlo. No usar `wipe` ni `table.remove` sobre almacenes de cartas.
+4. Eliminar desde el historial es borrado lógico mediante `hidden`; Restaurar
+   debe revertirlo. No usar `wipe` ni `table.remove` sobre almacenes de cartas.
 5. No volver a introducir límites silenciosos de cantidad o antigüedad.
 6. No probar cambios directamente contra el SavedVariables activo. Cargarlo en
    memoria es válido; escribirlo o sustituirlo requiere WoW cerrado y backup.
@@ -96,6 +96,16 @@ causada por el horizonte antiguo de 30 días. Antes de cambiarlo debe conservar
 los valores en `_timestampBeforeExpiryFix` y `_dateBeforeExpiryFix`. La reparación
 es idempotente, no cambia cuerpos ni claves y nunca reduce almacenes.
 
+Una fila antigua también puede demostrar el horizonte de 30 días mediante su
+`timestamp`, `_lastSeenAt` y `daysLeft` aunque su fecha no sea futura. Al volver a
+ver esa carta con la estimación de 31 días, debe reutilizarse y corregirse el
+registro existente conservando los campos de respaldo solo si el cuerpo está
+disponible y coincide exactamente; una cabecera no leída sigue siendo ambigua.
+Los duplicados técnicos
+ya creados solo se omiten de la vista si ambos registros prueban los horizontes
+30/31 y coinciden exactamente en contenido e identidad. Nunca borrarlos,
+fusionarlos, marcarlos `hidden` ni persistir automáticamente una decisión dudosa.
+
 La vista histórica se construye con `BuildParticipantGroups`: interlocutor,
 conversaciones y cartas. Los interlocutores y conversaciones empiezan contraídos
 salvo al buscar. `BUZÓN ACTUAL` empieza expandido. El estado desplegado pertenece
@@ -106,6 +116,13 @@ mostrar `[NUEVA]` o `[LEÍDA]`. Un registro de `archive` puede aportar el cuerpo
 pero nunca debe sobrescribir el estado de lectura de una fila viva. La primera
 creación de la ventana debe ejecutar `Refresh` explícitamente porque un frame de
 WoW puede nacer visible y no disparar `OnShow` al llamar después a `Show()`.
+
+`Borrar` en `BUZÓN ACTUAL` sí actúa sobre el correo real. Debe comprobar objetos,
+dinero y COD antes y después de confirmar; cualquier contenido bloquea el
+borrado. Debe exigir `InboxItemCanDelete`, nunca sustituir borrado por
+`ReturnInboxItem`, verificar que la fila no haya cambiado y completar
+`CaptureInboxMail` antes de llamar a `DeleteInboxItem`. El archivo permanente no
+se reduce ni se marca `hidden` como efecto de borrar en Blizzard.
 
 ## Pruebas obligatorias
 
@@ -125,7 +142,36 @@ un escaneo no solicita cuerpos no leídos, renderizar no cambia `wasRead`, el
 estado vivo prevalece sobre `archive`, Leer/Ver sí captura y la ventana refresca
 en su primera apertura. Debe existir además una regresión con `daysLeft=30.x`
 que intercale una recibida entre dos enviadas, y otra que verifique la reparación
-idempotente conservando fecha, timestamp y metadatos originales.
+idempotente conservando fecha, timestamp y metadatos originales. Cubrir también
+el desplazamiento de fila durante la migración 30→31, el alias visual no
+destructivo y dos cartas legítimas idénticas que no deben agruparse. El borrado
+vivo debe probar adjuntos, dinero, COD, correo retornable, cambio de fila y
+captura del cuerpo previa a `DeleteInboxItem` exclusivamente mediante mocks.
+
+## Desarrollo local sin publicación
+
+El trabajo en curso se realiza en el worktree hermano `../Cartas-Dev`, rama
+local `dev/parchment-ui`. El worktree canónico debe permanecer en `main` como
+copia de la última versión publicada. Se permiten commits locales frecuentes para
+comparar iteraciones y facilitar rollback, pero no se sube esta rama ni se crea
+ningún tag sin autorización explícita del propietario.
+
+Durante el desarrollo:
+
+- usar una versión de TOC terminada en `-dev` para la siguiente versión aún no
+  publicada;
+- no ejecutar `New-CartasRelease.ps1` ni reemplazar
+  `Wow-Midnight-Cartas-Last-Version.zip`;
+- no crear tags `v*`, ya que cada tag activa una subida real a CurseForge;
+- instalar para pruebas copiando solo los tres runtime files desde el worktree a
+  `Interface/AddOns/Cartas` y solicitar `/reload`;
+- no tocar, copiar ni restaurar SavedVariables como parte de una prueba visual.
+
+Cuando el propietario apruebe expresamente una beta o release, quitar `-dev` o
+aplicar el calificador autorizado, ejecutar el flujo completo, integrar en
+`main` y crear una sola vez el tag correspondiente. Hasta esa autorización,
+ninguna iteración local debe producir una actualización pública ni modificar el
+ZIP de descarga.
 
 ## Flujo de releases e instalación
 
@@ -159,8 +205,8 @@ desarrollo ni SavedVariables.
 El proyecto público es `1648457`. `Cartas.toc` debe conservar
 `## X-Curse-Project-ID: 1648457`. El workflow `.github/workflows/release.yml`
 solo se activa con tags `v*`, vuelve a ejecutar tests y auditoría y publica el
-ZIP raíz ya auditado mediante la API oficial. No crear tags mientras el proyecto
-de CurseForge siga en revisión.
+ZIP raíz ya auditado mediante la API oficial. El proyecto ya está aprobado, pero
+solo se crea un tag cuando el propietario autoriza expresamente esa publicación.
 
 El tag y `## Version` deben coincidir exactamente: por ejemplo, la versión
 `1.9.0-rc8` usa el tag anotado `v1.9.0-rc8`. Tags con `alpha` publican Alpha;

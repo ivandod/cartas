@@ -1,12 +1,14 @@
 local ADDON_NAME = ...
--- v1.9.0: data-safe history, partial character search and local test hooks.
+-- v1.10.0: visual rework, compact sizing and guarded live-mail deletion.
 CartasDB = CartasDB or {}
 
 local MAIL_SUBJECT_MAX_LETTERS = 64
 local MAIL_BODY_MAX_LETTERS = 500
 local MAIL_REPLY_PREFIX = "RE: "
 local NORMAL_MAIL_EXPIRY_DAYS = 31
+local LEGACY_NORMAL_MAIL_EXPIRY_DAYS = 30
 local COD_MAIL_EXPIRY_DAYS = 3
+local EXPIRY_TIMESTAMP_TOLERANCE = 600
 
 -- Migrate data from the previous addon name without losing existing letters.
 if CorrespondenciaDB and not CartasDB.migratedFromCorrespondencia then
@@ -17,7 +19,213 @@ end
 
 local pendingMail = nil
 local activeCompose = nil
+local activeSettings = nil
 local activeMailRefresh = nil
+
+local UI_THEME_CLASSIC = "classic"
+local UI_THEME_PARCHMENT = "parchment"
+local UI_OPACITY_MIN = 0.55
+local UI_OPACITY_MAX = 1
+local HISTORY_WIDTH_DEFAULT = 1020
+local HISTORY_WIDTH_MIN = 760
+local HISTORY_WIDTH_MAX = 1600
+local HISTORY_HEIGHT_DEFAULT = 720
+local HISTORY_HEIGHT_MIN = 520
+local HISTORY_HEIGHT_MAX = 1000
+
+local CLASSIC_FRAME_BACKDROP = {
+    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 16,
+    insets = {left = 4, right = 4, top = 4, bottom = 4},
+}
+
+local PARCHMENT_FRAME_BACKDROP = {
+    edgeFile = "Interface/DialogFrame/UI-DialogBox-Border",
+    edgeSize = 24,
+    insets = {left = 8, right = 8, top = 8, bottom = 8},
+}
+
+local PANEL_BACKDROP = {
+    bgFile = "Interface/Buttons/WHITE8X8",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = false, edgeSize = 12,
+    insets = {left = 3, right = 3, top = 3, bottom = 3},
+}
+
+local THEMES = {
+    [UI_THEME_CLASSIC] = {
+        title = {1, 1, 1},
+        label = {1, 0.82, 0},
+        input = {1, 1, 1},
+        body = {1, 1, 1},
+        hint = {1, 0.82, 0},
+        counter = {0.65, 0.65, 0.65},
+        frame = {0.04, 0.04, 0.06, 0.98},
+        border = {0.55, 0.55, 0.60, 1},
+        panels = {
+            composeBody = {0.025, 0.025, 0.035, 0.96},
+            search = {0.025, 0.025, 0.035, 1},
+            inboxHeader = {0.16, 0.12, 0.08, 0.95},
+            inboxHeaderHover = {0.22, 0.17, 0.11, 0.95},
+            inboxCard = {0.10, 0.10, 0.12, 0.94},
+            historyHeader = {0.10, 0.14, 0.10, 0.95},
+            participant = {0.10, 0.11, 0.15, 0.98},
+            participantHover = {0.15, 0.16, 0.21, 0.98},
+            thread = {0.12, 0.12, 0.16, 0.95},
+            threadHover = {0.17, 0.17, 0.22, 0.95},
+            incoming = {0.08, 0.12, 0.08, 0.94},
+            outgoing = {0.08, 0.09, 0.15, 0.94},
+        },
+        hex = {
+            accent = "FFD100", muted = "aaaaaa", new = "7CFF00",
+            incoming = "66ff66", outgoing = "66ccff", body = "ffffff",
+            secondary = "dddddd",
+        },
+    },
+    [UI_THEME_PARCHMENT] = {
+        title = {0.22, 0.12, 0.05},
+        label = {0.27, 0.16, 0.07},
+        input = {0.20, 0.13, 0.07},
+        body = {0.18, 0.12, 0.07},
+        hint = {0.37, 0.24, 0.10},
+        counter = {0.38, 0.28, 0.18},
+        frame = {0.84, 0.70, 0.47, 1},
+        border = {0.43, 0.25, 0.09, 1},
+        panels = {
+            composeBody = {0.94, 0.88, 0.72, 0.98},
+            search = {0.96, 0.90, 0.76, 1},
+            inboxHeader = {0.24, 0.15, 0.07, 0.97},
+            inboxHeaderHover = {0.31, 0.20, 0.09, 0.98},
+            inboxCard = {0.91, 0.84, 0.68, 0.98},
+            historyHeader = {0.25, 0.22, 0.12, 0.97},
+            participant = {0.20, 0.12, 0.06, 0.98},
+            participantHover = {0.28, 0.17, 0.08, 0.98},
+            thread = {0.80, 0.70, 0.50, 0.98},
+            threadHover = {0.87, 0.78, 0.59, 0.99},
+            incoming = {0.91, 0.85, 0.69, 0.98},
+            outgoing = {0.83, 0.85, 0.75, 0.98},
+        },
+        hex = {
+            accent = "f0d69a", muted = "d8c39a", new = "ff8b78",
+            incoming = "86d395", outgoing = "86b8d5", body = "2e1f12",
+            secondary = "4f3b27",
+        },
+    },
+}
+
+local function ClampUIOpacity(value)
+    return math.max(UI_OPACITY_MIN, math.min(UI_OPACITY_MAX, tonumber(value) or UI_OPACITY_MAX))
+end
+
+local function GetHistorySizeLimits()
+    local maxWidth = HISTORY_WIDTH_MAX
+    local maxHeight = HISTORY_HEIGHT_MAX
+    if UIParent and type(UIParent.GetWidth) == "function" then
+        local parentWidth = tonumber(UIParent:GetWidth()) or 0
+        if parentWidth > 0 then
+            maxWidth = math.max(HISTORY_WIDTH_MIN, math.min(maxWidth, math.floor(parentWidth - 40)))
+        end
+    end
+    if UIParent and type(UIParent.GetHeight) == "function" then
+        local parentHeight = tonumber(UIParent:GetHeight()) or 0
+        if parentHeight > 0 then
+            maxHeight = math.max(HISTORY_HEIGHT_MIN, math.min(maxHeight, math.floor(parentHeight - 40)))
+        end
+    end
+    return HISTORY_WIDTH_MIN, maxWidth, HISTORY_HEIGHT_MIN, maxHeight
+end
+
+local function ClampHistoryWidth(value)
+    local minWidth, maxWidth = GetHistorySizeLimits()
+    local width = tonumber(value) or math.min(HISTORY_WIDTH_DEFAULT, maxWidth)
+    return math.floor(math.max(minWidth, math.min(maxWidth, width)) + 0.5)
+end
+
+local function ClampHistoryHeight(value)
+    local _, _, minHeight, maxHeight = GetHistorySizeLimits()
+    local height = tonumber(value) or math.min(HISTORY_HEIGHT_DEFAULT, maxHeight)
+    return math.floor(math.max(minHeight, math.min(maxHeight, height)) + 0.5)
+end
+
+local function EnsureUISettings()
+    CartasDB.ui = CartasDB.ui or {}
+    if CartasDB.ui.theme ~= UI_THEME_CLASSIC and CartasDB.ui.theme ~= UI_THEME_PARCHMENT then
+        CartasDB.ui.theme = UI_THEME_PARCHMENT
+    end
+    CartasDB.ui.opacity = ClampUIOpacity(CartasDB.ui.opacity)
+    CartasDB.ui.width = ClampHistoryWidth(CartasDB.ui.width)
+    CartasDB.ui.height = ClampHistoryHeight(CartasDB.ui.height)
+    return CartasDB.ui
+end
+
+local function GetTheme()
+    local settings = EnsureUISettings()
+    return THEMES[settings.theme], settings
+end
+
+local function SetTextThemeColor(fontString, color)
+    if fontString and color then fontString:SetTextColor(color[1], color[2], color[3]) end
+end
+
+local function ColorText(hex, value)
+    return "|cff" .. hex .. tostring(value or "") .. "|r"
+end
+
+local function EnsureParchmentLayers(frameToStyle)
+    if frameToStyle.parchmentBase then return end
+
+    local base = frameToStyle:CreateTexture(nil, "BACKGROUND", nil, -8)
+    base:SetPoint("TOPLEFT", 8, -8)
+    base:SetPoint("BOTTOMRIGHT", -8, 8)
+    frameToStyle.parchmentBase = base
+
+    local art = frameToStyle:CreateTexture(nil, "BACKGROUND", nil, -7)
+    art:SetPoint("TOPLEFT", 8, -8)
+    art:SetPoint("BOTTOMRIGHT", -8, 8)
+    art:SetTexture("Interface/QuestFrame/QuestBG")
+    frameToStyle.parchmentArt = art
+end
+
+local function ApplyWindowTheme(frameToStyle, forceOpaque)
+    local theme, settings = GetTheme()
+    local opacity = forceOpaque and 1 or settings.opacity
+    EnsureParchmentLayers(frameToStyle)
+
+    if settings.theme == UI_THEME_PARCHMENT then
+        frameToStyle:SetBackdrop(PARCHMENT_FRAME_BACKDROP)
+        frameToStyle:SetBackdropBorderColor(unpack(theme.border))
+        frameToStyle.parchmentBase:SetColorTexture(theme.frame[1], theme.frame[2], theme.frame[3], opacity)
+        frameToStyle.parchmentArt:SetVertexColor(1, 1, 1, 0.72 * opacity)
+        frameToStyle.parchmentBase:Show()
+        frameToStyle.parchmentArt:Show()
+    else
+        frameToStyle.parchmentBase:Hide()
+        frameToStyle.parchmentArt:Hide()
+        frameToStyle:SetBackdrop(CLASSIC_FRAME_BACKDROP)
+        frameToStyle:SetBackdropColor(theme.frame[1], theme.frame[2], theme.frame[3], theme.frame[4] * opacity)
+        frameToStyle:SetBackdropBorderColor(unpack(theme.border))
+    end
+end
+
+local function ApplyPanelTheme(frameToStyle, role, forceOpaque)
+    local theme, settings = GetTheme()
+    local color = assert(theme.panels[role], "Unknown Cartas panel role: " .. tostring(role))
+    local opacity = forceOpaque and 1 or settings.opacity
+    frameToStyle:SetBackdrop(PANEL_BACKDROP)
+    frameToStyle:SetBackdropColor(color[1], color[2], color[3], color[4] * opacity)
+    if settings.theme == UI_THEME_PARCHMENT then
+        frameToStyle:SetBackdropBorderColor(0.42, 0.29, 0.15, 0.95)
+    else
+        frameToStyle:SetBackdropBorderColor(0.35, 0.35, 0.40, 1)
+    end
+end
+
+local function SetPanelThemeColor(frameToStyle, role)
+    local theme, settings = GetTheme()
+    local color = theme.panels[role]
+    frameToStyle:SetBackdropColor(color[1], color[2], color[3], color[4] * settings.opacity)
+end
 
 local function EnsureDB()
     CartasDB = CartasDB or {}
@@ -29,6 +237,7 @@ local function EnsureDB()
     CartasDB.nextSequence = CartasDB.nextSequence or 0
     CartasDB.seen = CartasDB.seen or {}
     CartasDB.deletedArchive = CartasDB.deletedArchive or {}
+    EnsureUISettings()
 end
 
 local function CleanName(name)
@@ -59,11 +268,7 @@ local function NormalizeMailSubject(subject)
     return strtrim(subject or "")
 end
 
-local function EstimateMailTimestamp(daysLeft, CODAmount, referenceTime)
-    -- Retail can report newly received normal mail with daysLeft in the 30.x
-    -- range. Treating 30 as the full horizon reconstructs a timestamp in the
-    -- future and separates incoming replies from outgoing messages by a day.
-    local expiryDays = (CODAmount and CODAmount > 0) and COD_MAIL_EXPIRY_DAYS or NORMAL_MAIL_EXPIRY_DAYS
+local function EstimateMailTimestampForExpiry(daysLeft, expiryDays, referenceTime)
     local now = referenceTime or NowTimestamp()
     local timestamp = now
     if type(daysLeft) == "number" then
@@ -71,6 +276,35 @@ local function EstimateMailTimestamp(daysLeft, CODAmount, referenceTime)
         timestamp = now - ((expiryDays - remainingDays) * 86400)
     end
     return math.floor(timestamp + 0.5)
+end
+
+local function EstimateMailTimestamp(daysLeft, CODAmount, referenceTime)
+    -- Retail can report newly received normal mail with daysLeft in the 30.x
+    -- range. Treating 30 as the full horizon reconstructs a timestamp in the
+    -- future and separates incoming replies from outgoing messages by a day.
+    local expiryDays = (CODAmount and CODAmount > 0) and COD_MAIL_EXPIRY_DAYS or NORMAL_MAIL_EXPIRY_DAYS
+    return EstimateMailTimestampForExpiry(daysLeft, expiryDays, referenceTime)
+end
+
+local function RecordMatchesExpiryHorizon(mail, expiryDays)
+    local timestamp = tonumber(mail and mail.timestamp)
+    local lastSeenAt = tonumber(mail and mail._lastSeenAt)
+    local daysLeft = tonumber(mail and mail.daysLeft)
+    if not timestamp or not lastSeenAt or not daysLeft then return false end
+    local estimated = EstimateMailTimestampForExpiry(daysLeft, expiryDays, lastSeenAt)
+    return math.abs(timestamp - estimated) <= EXPIRY_TIMESTAMP_TOLERANCE
+end
+
+local function CorrectNormalExpiryTimestamp(mail, corrected, reason)
+    local previous = tonumber(mail and mail.timestamp)
+    corrected = tonumber(corrected)
+    if not previous or not corrected or previous == corrected then return false end
+    mail._timestampBeforeExpiryFix = mail._timestampBeforeExpiryFix or previous
+    mail._dateBeforeExpiryFix = mail._dateBeforeExpiryFix or mail.date
+    mail._timestampRepair = mail._timestampRepair or reason or "normal-expiry-31"
+    mail.timestamp = corrected
+    mail.date = date("%Y-%m-%d %H:%M:%S", corrected)
+    return true
 end
 
 local function RepairImpossibleFutureTimestamps()
@@ -86,12 +320,9 @@ local function RepairImpossibleFutureTimestamps()
         -- are exactly one day ahead of the corrected 31-day estimate.
         if timestamp and firstSeenAt and timestamp > firstSeenAt + 300 then
             local corrected = math.min(timestamp - 86400, firstSeenAt)
-            mail._timestampBeforeExpiryFix = mail._timestampBeforeExpiryFix or timestamp
-            mail._dateBeforeExpiryFix = mail._dateBeforeExpiryFix or mail.date
-            mail._timestampRepair = mail._timestampRepair or "normal-expiry-31"
-            mail.timestamp = corrected
-            mail.date = date("%Y-%m-%d %H:%M:%S", corrected)
-            repaired = repaired + 1
+            if CorrectNormalExpiryTimestamp(mail, corrected, "normal-expiry-31") then
+                repaired = repaired + 1
+            end
         end
     end
 
@@ -257,6 +488,84 @@ local function AuditArchiveDuplicates()
     return candidates
 end
 
+local function IncomingContentIdentity(mail)
+    local body = mail and mail.body or ""
+    if body == "" then return nil end
+    return table.concat({
+        mail.owner or mail.recipient or "",
+        CleanName(mail.sender),
+        NormalizeMailSubject(mail.subject),
+        body,
+    }, "\031")
+end
+
+local function IsExpiryHorizonTechnicalDuplicate(first, second)
+    if not first or not second then return false end
+    local firstIdentity = IncomingContentIdentity(first)
+    if not firstIdentity or firstIdentity ~= IncomingContentIdentity(second) then return false end
+
+    local firstTimestamp = tonumber(first.timestamp)
+    local secondTimestamp = tonumber(second.timestamp)
+    if not firstTimestamp or not secondTimestamp then return false end
+
+    local corrected, legacy = first, second
+    if firstTimestamp > secondTimestamp then corrected, legacy = second, first end
+    local correctedTimestamp = tonumber(corrected.timestamp)
+    local legacyTimestamp = tonumber(legacy.timestamp)
+    if math.abs((legacyTimestamp - correctedTimestamp) - 86400) > EXPIRY_TIMESTAMP_TOLERANCE then
+        return false
+    end
+
+    -- Both records must independently prove which expiry horizon generated
+    -- their timestamp. This avoids suppressing two legitimate identical mails
+    -- that happened to be sent one day apart.
+    if not RecordMatchesExpiryHorizon(corrected, NORMAL_MAIL_EXPIRY_DAYS)
+        or not RecordMatchesExpiryHorizon(legacy, LEGACY_NORMAL_MAIL_EXPIRY_DAYS) then
+        return false
+    end
+
+    local correctedFirstSeen = tonumber(corrected._firstSeenAt)
+    local legacyLastSeen = tonumber(legacy._lastSeenAt)
+    if correctedFirstSeen and legacyLastSeen
+        and correctedFirstSeen < legacyLastSeen - EXPIRY_TIMESTAMP_TOLERANCE then
+        return false
+    end
+
+    return true, legacy, corrected
+end
+
+local function BuildTechnicalDuplicateAliases(archive)
+    local groups = {}
+    for _, mail in ipairs(archive or {}) do
+        local identity = IncomingContentIdentity(mail)
+        if identity then
+            groups[identity] = groups[identity] or {}
+            table.insert(groups[identity], mail)
+        end
+    end
+
+    local aliases = {}
+    for _, records in pairs(groups) do
+        for firstIndex = 1, #records do
+            for secondIndex = firstIndex + 1, #records do
+                local isDuplicate, legacy, corrected = IsExpiryHorizonTechnicalDuplicate(
+                    records[firstIndex], records[secondIndex]
+                )
+                if isDuplicate then aliases[legacy] = corrected end
+            end
+        end
+    end
+    return aliases
+end
+
+local function IsLegacyNormalExpiryTimestamp(mail, currentTimestamp)
+    local timestamp = tonumber(mail and mail.timestamp)
+    currentTimestamp = tonumber(currentTimestamp)
+    if not timestamp or not currentTimestamp then return false end
+    return math.abs((timestamp - currentTimestamp) - 86400) <= EXPIRY_TIMESTAMP_TOLERANCE
+        and RecordMatchesExpiryHorizon(mail, LEGACY_NORMAL_MAIL_EXPIRY_DAYS)
+end
+
 local function NewArchiveMail(owner, sender, subject, timestamp, wasRead, money, hasItem, canReply, isGM, daysLeft, slot, observedAt)
     EnsureDB()
     local sequence = NextSequence()
@@ -284,10 +593,11 @@ end
 -- Find an existing historical record for a currently visible inbox row.
 -- Matching is deliberately one-to-one so two mails with the same sender and
 -- subject are still stored as two separate historical messages.
-local function FindLiveArchiveMatch(owner, sender, subject, timestamp, used, slot, daysLeft)
+local function FindLiveArchiveMatch(owner, sender, subject, timestamp, used, slot, daysLeft, body)
     local cleanSender = CleanName(sender)
     local normalizedSubject = NormalizeMailSubject(subject)
     local best, bestDelta, bestIndexDelta
+    local legacyBest, legacyBestIndexDelta
 
     -- IMPORTANT: the Blizzard inbox index is NOT a stable message identity.
     -- When a new letter arrives, every older letter can move one or more slots.
@@ -309,6 +619,11 @@ local function FindLiveArchiveMatch(owner, sender, subject, timestamp, used, slo
                 if not bestDelta or delta < bestDelta or (delta == bestDelta and indexDelta < bestIndexDelta) then
                     best, bestDelta, bestIndexDelta = mail, delta, indexDelta
                 end
+                if body and body ~= "" and mail.body == body
+                    and IsLegacyNormalExpiryTimestamp(mail, timestamp)
+                    and (not legacyBestIndexDelta or indexDelta < legacyBestIndexDelta) then
+                    legacyBest, legacyBestIndexDelta = mail, indexDelta
+                end
             elseif not best then
                 best = mail
                 bestIndexDelta = math.abs((mail._lastInboxIndex or slot or 0) - (slot or 0))
@@ -320,6 +635,15 @@ local function FindLiveArchiveMatch(owner, sender, subject, timestamp, used, slo
     -- different letter with the same subject must become a new archive record.
     if bestDelta and bestDelta <= 300 then
         return best
+    end
+
+    -- Versions that assumed a 30-day normal-mail horizon stored timestamps one
+    -- day ahead of the current 31-day estimate. Recognize that exact migration
+    -- signature even if new inbox rows shifted every slot, then preserve the
+    -- original timestamp before correcting the existing record in place.
+    if legacyBest then
+        CorrectNormalExpiryTimestamp(legacyBest, timestamp, "normal-expiry-31-live-match")
+        return legacyBest
     end
 
     -- If the timestamp is no longer trustworthy for this inbox row, prefer the
@@ -354,7 +678,13 @@ local function SaveIncomingMail(index, used, scanNow)
     -- inbox row, which fabricated one-second differences between mails that had
     -- actually been observed in the same scan.
     local timestamp = EstimateMailTimestamp(daysLeft, CODAmount, scanNow)
-    local existing = FindLiveArchiveMatch(owner, sender, subject, timestamp, used or {}, index, daysLeft)
+    local loadedBody = ""
+    if wasRead and type(GetInboxText) == "function" then
+        loadedBody = GetInboxText(index) or ""
+    end
+    local existing = FindLiveArchiveMatch(
+        owner, sender, subject, timestamp, used or {}, index, daysLeft, loadedBody
+    )
 
     if not existing then
         existing = NewArchiveMail(owner, sender, subject, timestamp, wasRead, money, hasItem, canReply, isGM, daysLeft, index, scanNow)
@@ -375,11 +705,8 @@ local function SaveIncomingMail(index, used, scanNow)
     -- Never request an unread body during a background scan. In WoW,
     -- GetInboxText() may transition the live message to read. Once Blizzard
     -- already reports it as read, preserving the loaded body is safe.
-    if wasRead and type(GetInboxText) == "function" then
-        local loadedBody = GetInboxText(index)
-        if loadedBody and loadedBody ~= "" then
-            existing.body = loadedBody
-        end
+    if loadedBody ~= "" then
+        existing.body = loadedBody
     end
 
     if used then used[existing] = true end
@@ -492,6 +819,7 @@ local function GetLiveInbox()
         if sender and sender ~= "" then
             -- Header-only: do not request the body just to render the inbox list.
             local body = ""
+            local itemCount = tonumber(hasItem) or (hasItem and 1 or 0)
             table.insert(result, {
                 inboxIndex = index,
                 sender = CleanName(sender),
@@ -499,7 +827,8 @@ local function GetLiveInbox()
                 body = body,
                 money = money or 0,
                 CODAmount = CODAmount or 0,
-                hasItem = hasItem and true or false,
+                hasItem = itemCount > 0,
+                itemCount = itemCount,
                 wasRead = wasRead and true or false,
                 canReply = canReply and true or false,
                 isGM = isGM and true or false,
@@ -565,9 +894,11 @@ local function GetAllCorrespondence()
     EnsureArchive()
     RepairImpossibleFutureTimestamps()
     AuditArchiveDuplicates()
+    local technicalDuplicateAliases = BuildTechnicalDuplicateAliases(CartasDB.archive)
     for _, mail in ipairs(CartasDB.archive) do
         local mailOwner = CleanName(mail.owner or mail.recipient or "")
-        if not mail.hidden and mailOwner == CleanName(owner) and IsConversationMail(mail) then
+        if not technicalDuplicateAliases[mail]
+            and not mail.hidden and mailOwner == CleanName(owner) and IsConversationMail(mail) then
             local copy = {}
             for k, v in pairs(mail) do copy[k] = v end
             copy.direction = "in"
@@ -851,7 +1182,7 @@ local function ShowHistory(target)
         if MailMatchesPerson(mail, targetLower) then
             found = found + 1
             print(" ")
-            local icon = mail.direction == "in" and "|cff66ff66📥 RECIBIDA|r" or "|cff66ccff📤 ENVIADA|r"
+            local icon = mail.direction == "in" and "|cff66ff66RECIBIDA|r" or "|cff66ccffENVIADA|r"
             print(icon .. " |cffFFD100" .. (mail.person or "?") .. "|r — " ..
                 (mail.date or FormatDate(mail.timestamp)))
             if mail.subject and mail.subject ~= "" then
@@ -1024,7 +1355,7 @@ local function CaptureInboxMail(index, onDone)
             mail = FindArchiveByBody(owner, sender, subject, body, timestamp)
         end
         if not mail then
-            mail = FindLiveArchiveMatch(owner, sender, subject, timestamp, {}, index, daysLeft)
+            mail = FindLiveArchiveMatch(owner, sender, subject, timestamp, {}, index, daysLeft, body)
         end
         if not mail then
             mail = FindArchiveByIdentity(owner, sender, subject, timestamp, body)
@@ -1105,8 +1436,166 @@ local function GetInboxAttachments(index)
     return items
 end
 
+local function GetLiveInboxDeleteState(index)
+    if not GetInboxHeaderInfo then return nil end
+    local _, _, sender, subject, money, CODAmount, daysLeft, itemCount = GetInboxHeaderInfo(index)
+    if not sender or sender == "" then return nil end
+
+    local headerItemCount = tonumber(itemCount) or (itemCount and 1 or 0)
+    local loadedItemCount = #GetInboxAttachments(index)
+    local canDelete = false
+    if type(InboxItemCanDelete) == "function" then
+        canDelete = InboxItemCanDelete(index) and true or false
+    end
+
+    return {
+        inboxIndex = index,
+        sender = CleanName(sender),
+        subject = subject or "",
+        daysLeft = tonumber(daysLeft),
+        money = tonumber(money) or 0,
+        CODAmount = tonumber(CODAmount) or 0,
+        itemCount = math.max(headerItemCount, loadedItemCount),
+        canDelete = canDelete,
+    }
+end
+
+local function DescribeLiveInboxProtectedContents(state)
+    if not state then return nil end
+    local contents = {}
+    if state.itemCount > 0 then
+        table.insert(contents, state.itemCount == 1 and "1 objeto" or (state.itemCount .. " objetos"))
+    end
+    if state.money > 0 then table.insert(contents, "dinero adjunto") end
+    if state.CODAmount > 0 then table.insert(contents, "un pago contra reembolso") end
+    if #contents == 0 then return nil end
+    return "No se ha borrado el correo porque contiene " .. table.concat(contents, ", ") ..
+        ".\n\nRecoge o gestiona el contenido antes de borrarlo."
+end
+
+local function SameLiveInboxRow(expected, current)
+    if not expected or not current then return false end
+    if expected.inboxIndex ~= current.inboxIndex
+        or expected.sender ~= current.sender
+        or NormalizeMailSubject(expected.subject) ~= NormalizeMailSubject(current.subject) then
+        return false
+    end
+    if expected.daysLeft and current.daysLeft
+        and math.abs(expected.daysLeft - current.daysLeft) > 0.002 then
+        return false
+    end
+    return true
+end
+
+local function ShowLiveInboxDeleteWarning(message)
+    StaticPopup_Show("CARTAS_LIVE_MAIL_WARNING", message)
+end
+
+local function DeleteLiveInboxMail(expected)
+    local current = expected and GetLiveInboxDeleteState(expected.inboxIndex)
+    if not SameLiveInboxRow(expected, current) then
+        ShowLiveInboxDeleteWarning("El buzón ha cambiado y no se puede identificar con seguridad el correo seleccionado. Vuelve a intentarlo.")
+        return false
+    end
+
+    local protectedContents = DescribeLiveInboxProtectedContents(current)
+    if protectedContents then
+        ShowLiveInboxDeleteWarning(protectedContents)
+        return false
+    end
+    if not current.canDelete then
+        ShowLiveInboxDeleteWarning("World of Warcraft no permite borrar este correo; solo puede devolverse al remitente desde el buzón normal.")
+        return false
+    end
+    if type(DeleteInboxItem) ~= "function" then
+        ShowLiveInboxDeleteWarning("La función de borrado del buzón no está disponible en este momento.")
+        return false
+    end
+    if C_Mail and C_Mail.IsCommandPending and C_Mail.IsCommandPending() then
+        ShowLiveInboxDeleteWarning("El buzón está procesando otra operación. Espera un momento y vuelve a intentarlo.")
+        return false
+    end
+
+    CaptureInboxMail(current.inboxIndex, function(captured)
+        if not captured then
+            ShowLiveInboxDeleteWarning("No se pudo archivar el contenido del correo, por lo que no se ha borrado.")
+            return
+        end
+
+        local latest = GetLiveInboxDeleteState(current.inboxIndex)
+        if not SameLiveInboxRow(current, latest) then
+            ShowLiveInboxDeleteWarning("El buzón cambió mientras se archivaba el correo. No se ha borrado nada.")
+            return
+        end
+        local latestProtectedContents = DescribeLiveInboxProtectedContents(latest)
+        if latestProtectedContents then
+            ShowLiveInboxDeleteWarning(latestProtectedContents)
+            return
+        end
+        if not latest.canDelete then
+            ShowLiveInboxDeleteWarning("World of Warcraft ya no permite borrar este correo. No se ha borrado nada.")
+            return
+        end
+
+        DeleteInboxItem(current.inboxIndex)
+        if InboxFrame and InboxFrame.openMailID == current.inboxIndex then
+            InboxFrame.openMailID = nil
+        end
+        if OpenMailFrame and type(OpenMailFrame.IsShown) == "function" and OpenMailFrame:IsShown() then
+            if type(HideUIPanel) == "function" then
+                HideUIPanel(OpenMailFrame)
+            else
+                OpenMailFrame:Hide()
+            end
+        end
+        PrintLine("Correo eliminado del buzón. La copia archivada permanece en Cartas.")
+        C_Timer.After(0.25, function()
+            if activeMailRefresh then activeMailRefresh() end
+        end)
+    end)
+    return true
+end
+
+local function RequestDeleteLiveInboxMail(index)
+    local state = GetLiveInboxDeleteState(index)
+    if not state then
+        ShowLiveInboxDeleteWarning("Ese correo ya no está disponible en el buzón.")
+        return false, "missing"
+    end
+
+    local protectedContents = DescribeLiveInboxProtectedContents(state)
+    if protectedContents then
+        ShowLiveInboxDeleteWarning(protectedContents)
+        return false, "protected"
+    end
+    if not state.canDelete then
+        ShowLiveInboxDeleteWarning("World of Warcraft no permite borrar este correo; solo puede devolverse al remitente desde el buzón normal.")
+        return false, "return-only"
+    end
+
+    StaticPopup_Show("CARTAS_DELETE_LIVE_MAIL", nil, nil, state)
+    return true
+end
+
+local function ApplyComposeFrameTheme(frameToStyle)
+    if not frameToStyle then return end
+    local theme = GetTheme()
+    ApplyWindowTheme(frameToStyle)
+    SetTextThemeColor(frameToStyle.themeTitle, theme.title)
+    for _, label in ipairs(frameToStyle.themeLabels or {}) do
+        SetTextThemeColor(label, theme.label)
+    end
+    for _, editBox in ipairs(frameToStyle.themeEdits or {}) do
+        editBox:SetTextColor(theme.input[1], theme.input[2], theme.input[3])
+    end
+    if frameToStyle.bodyBox then ApplyPanelTheme(frameToStyle.bodyBox, "composeBody") end
+    if frameToStyle.body then frameToStyle.body:SetTextColor(theme.body[1], theme.body[2], theme.body[3]) end
+    if frameToStyle.refreshCounters then frameToStyle.refreshCounters() end
+end
+
 local function OpenCompose(recipient, subject, body)
     if activeCompose then
+        ApplyComposeFrameTheme(activeCompose)
         activeCompose:Show()
         if recipient then activeCompose.to:SetText(recipient) end
         if subject then activeCompose.subject:SetText(subject) end
@@ -1124,31 +1613,31 @@ local function OpenCompose(recipient, subject, body)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    f:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 }
-    })
-    f:SetBackdropColor(0.05, 0.05, 0.08, 0.98)
+    ApplyWindowTheme(f)
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    f.themeTitle = title
     title:SetPoint("TOP", 0, -15)
     title:SetText("Escribir carta")
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -4, -4)
 
+    f.themeLabels = {}
+    f.themeEdits = {}
+
     local function MakeEdit(label, y, maxLetters, rightInset)
         local l = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         l:SetPoint("TOPLEFT", 20, y + 2)
         l:SetText(label)
+        table.insert(f.themeLabels, l)
         local e = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
         e:SetPoint("TOPLEFT", 90, y + 7)
         e:SetPoint("RIGHT", -(rightInset or 20), 0)
         e:SetHeight(28)
         e:SetAutoFocus(false)
         e:SetMaxLetters(maxLetters)
+        table.insert(f.themeEdits, e)
         return e
     end
 
@@ -1163,28 +1652,22 @@ local function OpenCompose(recipient, subject, body)
     -- Área de contenido: marco propio para que el campo multilínea se vea
     -- realmente como un cuadro de escritura y no como una zona gris sin borde.
     local bodyBox = CreateFrame("Frame", nil, f, "BackdropTemplate")
+    f.bodyBox = bodyBox
     bodyBox:SetPoint("TOPLEFT", 20, -126)
     bodyBox:SetPoint("BOTTOMRIGHT", -20, 58)
-    bodyBox:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    bodyBox:SetBackdropColor(0.025, 0.025, 0.035, 0.96)
-    bodyBox:SetBackdropBorderColor(0.35, 0.35, 0.40, 1)
+    ApplyPanelTheme(bodyBox, "composeBody")
 
-    local body = CreateFrame("EditBox", nil, bodyBox)
-    f.body = body
-    body:SetMultiLine(true)
-    body:SetAutoFocus(false)
-    body:SetMaxLetters(MAIL_BODY_MAX_LETTERS)
-    body:SetPoint("TOPLEFT", 10, -10)
-    body:SetPoint("BOTTOMRIGHT", -10, 26)
-    body:SetFontObject(GameFontHighlight)
-    body:SetTextInsets(2, 2, 2, 2)
-    body:SetJustifyH("LEFT")
-    body:SetJustifyV("TOP")
+    local bodyEdit = CreateFrame("EditBox", nil, bodyBox)
+    f.body = bodyEdit
+    bodyEdit:SetMultiLine(true)
+    bodyEdit:SetAutoFocus(false)
+    bodyEdit:SetMaxLetters(MAIL_BODY_MAX_LETTERS)
+    bodyEdit:SetPoint("TOPLEFT", 10, -10)
+    bodyEdit:SetPoint("BOTTOMRIGHT", -10, 26)
+    bodyEdit:SetFontObject(GameFontHighlight)
+    bodyEdit:SetTextInsets(2, 2, 2, 2)
+    bodyEdit:SetJustifyH("LEFT")
+    bodyEdit:SetJustifyV("TOP")
 
     local bodyCounter = bodyBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     bodyCounter:SetPoint("BOTTOMRIGHT", -10, 8)
@@ -1192,6 +1675,7 @@ local function OpenCompose(recipient, subject, body)
 
     local function BindCharacterCounter(editBox, counter, limit)
         local function RefreshCounter()
+            local theme = GetTheme()
             local count = editBox.GetNumLetters and editBox:GetNumLetters()
                 or CountUTF8Characters(editBox:GetText())
             counter:SetFormattedText("%d/%d", count, limit)
@@ -1200,15 +1684,19 @@ local function OpenCompose(recipient, subject, body)
             elseif count >= math.floor(limit * 0.9) then
                 counter:SetTextColor(1, 0.82, 0)
             else
-                counter:SetTextColor(0.65, 0.65, 0.65)
+                counter:SetTextColor(theme.counter[1], theme.counter[2], theme.counter[3])
             end
         end
         editBox:SetScript("OnTextChanged", RefreshCounter)
-        RefreshCounter()
+        return RefreshCounter
     end
 
-    BindCharacterCounter(f.subject, subjectCounter, MAIL_SUBJECT_MAX_LETTERS)
-    BindCharacterCounter(f.body, bodyCounter, MAIL_BODY_MAX_LETTERS)
+    local refreshSubjectCounter = BindCharacterCounter(f.subject, subjectCounter, MAIL_SUBJECT_MAX_LETTERS)
+    local refreshBodyCounter = BindCharacterCounter(f.body, bodyCounter, MAIL_BODY_MAX_LETTERS)
+    f.refreshCounters = function()
+        refreshSubjectCounter()
+        refreshBodyCounter()
+    end
 
     local send = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     send:SetSize(120, 30)
@@ -1248,6 +1736,7 @@ local function OpenCompose(recipient, subject, body)
     f.to:SetText(recipient or "")
     f.subject:SetText(subject or "")
     f.body:SetText(body or "")
+    ApplyComposeFrameTheme(f)
     f:Show()
 end
 
@@ -1390,6 +1879,28 @@ StaticPopupDialogs["CARTAS_DELETE_ALL"] = {
     preferredIndex = 3,
 }
 
+StaticPopupDialogs["CARTAS_LIVE_MAIL_WARNING"] = {
+    text = "%s",
+    button1 = "Entendido",
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["CARTAS_DELETE_LIVE_MAIL"] = {
+    text = "¿Borrar este correo del buzón de World of Warcraft?\n\nCartas archivará primero su contenido y conservará la copia histórica.",
+    button1 = "Borrar",
+    button2 = "Cancelar",
+    OnAccept = function(self, data)
+        if data then DeleteLiveInboxMail(data) end
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
 local function ResolveExpandedState(state, key, defaultExpanded)
     if state[key] == nil then return defaultExpanded and true or false end
     return state[key] and true or false
@@ -1404,16 +1915,258 @@ local function ShowFrameWithInitialRefresh(frameToShow, refresh)
     end
 end
 
+local function SetVisualSettings(themeName, opacity, width, height)
+    EnsureDB()
+    if themeName == UI_THEME_CLASSIC or themeName == UI_THEME_PARCHMENT then
+        CartasDB.ui.theme = themeName
+    end
+    if opacity ~= nil then CartasDB.ui.opacity = ClampUIOpacity(opacity) end
+    if width ~= nil then CartasDB.ui.width = ClampHistoryWidth(width) end
+    if height ~= nil then CartasDB.ui.height = ClampHistoryHeight(height) end
+    return CartasDB.ui
+end
+
+local function ApplyHistoryWindowSize(frameToStyle)
+    if not frameToStyle then return end
+    local settings = EnsureUISettings()
+    frameToStyle:SetSize(settings.width, settings.height)
+end
+
+local function ApplyHistoryFrameTheme(frameToStyle)
+    if not frameToStyle then return end
+    local theme = GetTheme()
+    ApplyHistoryWindowSize(frameToStyle)
+    ApplyWindowTheme(frameToStyle)
+    SetTextThemeColor(frameToStyle.themeTitle, theme.title)
+    SetTextThemeColor(frameToStyle.themeHint, theme.hint)
+    if frameToStyle.themeSearchPanel then
+        ApplyPanelTheme(frameToStyle.themeSearchPanel, "search", true)
+    end
+    if frameToStyle.themeSearch then
+        frameToStyle.themeSearch:SetTextColor(theme.input[1], theme.input[2], theme.input[3])
+    end
+end
+
+local function ApplySettingsFrameTheme(frameToStyle)
+    if not frameToStyle then return end
+    local theme = GetTheme()
+    ApplyWindowTheme(frameToStyle, true)
+    SetTextThemeColor(frameToStyle.themeTitle, theme.title)
+    for _, label in ipairs(frameToStyle.themeLabels or {}) do
+        SetTextThemeColor(label, theme.label)
+    end
+end
+
+local function ApplyVisibleUITheme()
+    if CartasFrame then ApplyHistoryFrameTheme(CartasFrame) end
+    if activeCompose then ApplyComposeFrameTheme(activeCompose) end
+    if activeSettings then ApplySettingsFrameTheme(activeSettings) end
+    if activeMailRefresh then activeMailRefresh() end
+end
+
+local function OpenVisualSettings()
+    EnsureDB()
+
+    if not activeSettings then
+        local settingsFrame = CreateFrame("Frame", "CartasVisualSettingsFrame", UIParent, "BackdropTemplate")
+        activeSettings = settingsFrame
+        settingsFrame:SetSize(500, 370)
+        settingsFrame:SetPoint("CENTER", 0, 50)
+        settingsFrame:SetFrameStrata("DIALOG")
+        settingsFrame:SetMovable(true)
+        settingsFrame:EnableMouse(true)
+        settingsFrame:RegisterForDrag("LeftButton")
+        settingsFrame:SetScript("OnDragStart", settingsFrame.StartMoving)
+        settingsFrame:SetScript("OnDragStop", settingsFrame.StopMovingOrSizing)
+
+        settingsFrame.themeLabels = {}
+        local heading = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+        settingsFrame.themeTitle = heading
+        heading:SetPoint("TOP", 0, -20)
+        heading:SetText("Apariencia")
+
+        local close = CreateFrame("Button", nil, settingsFrame, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", -5, -5)
+
+        local styleLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        styleLabel:SetPoint("TOPLEFT", 34, -72)
+        styleLabel:SetText("Estilo")
+        table.insert(settingsFrame.themeLabels, styleLabel)
+
+        local classicButton = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+        settingsFrame.classicButton = classicButton
+        classicButton:SetSize(142, 30)
+        classicButton:SetPoint("TOPLEFT", 140, -64)
+        classicButton:SetText("Clásico")
+
+        local parchmentButton = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+        settingsFrame.parchmentButton = parchmentButton
+        parchmentButton:SetSize(142, 30)
+        parchmentButton:SetPoint("LEFT", classicButton, "RIGHT", 8, 0)
+        parchmentButton:SetText("Pergamino")
+
+        local opacityLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        opacityLabel:SetPoint("TOPLEFT", 34, -134)
+        opacityLabel:SetText("Opacidad")
+        table.insert(settingsFrame.themeLabels, opacityLabel)
+
+        local opacitySlider = CreateFrame("Slider", "CartasOpacitySlider", settingsFrame, "OptionsSliderTemplate")
+        settingsFrame.opacitySlider = opacitySlider
+        opacitySlider:SetPoint("TOPLEFT", 140, -126)
+        opacitySlider:SetSize(250, 20)
+        opacitySlider:SetMinMaxValues(UI_OPACITY_MIN * 100, UI_OPACITY_MAX * 100)
+        opacitySlider:SetValueStep(5)
+        if opacitySlider.SetObeyStepOnDrag then opacitySlider:SetObeyStepOnDrag(true) end
+        if CartasOpacitySliderLow then CartasOpacitySliderLow:SetText("55%") end
+        if CartasOpacitySliderHigh then CartasOpacitySliderHigh:SetText("100%") end
+        if CartasOpacitySliderText then CartasOpacitySliderText:SetText("") end
+
+        local opacityValue = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        settingsFrame.opacityValue = opacityValue
+        opacityValue:SetPoint("LEFT", opacitySlider, "RIGHT", 12, 0)
+        opacityValue:SetWidth(48)
+        opacityValue:SetJustifyH("RIGHT")
+        table.insert(settingsFrame.themeLabels, opacityValue)
+
+        local sizeLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        sizeLabel:SetPoint("TOPLEFT", 34, -188)
+        sizeLabel:SetText("Tamaño de ventana")
+        table.insert(settingsFrame.themeLabels, sizeLabel)
+
+        local widthLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        widthLabel:SetPoint("TOPLEFT", 34, -226)
+        widthLabel:SetText("Ancho")
+        table.insert(settingsFrame.themeLabels, widthLabel)
+
+        local widthSlider = CreateFrame("Slider", "CartasWidthSlider", settingsFrame, "OptionsSliderTemplate")
+        settingsFrame.widthSlider = widthSlider
+        widthSlider:SetPoint("TOPLEFT", 140, -218)
+        widthSlider:SetSize(250, 20)
+        widthSlider:SetValueStep(20)
+        if widthSlider.SetObeyStepOnDrag then widthSlider:SetObeyStepOnDrag(true) end
+
+        local widthValue = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        settingsFrame.widthValue = widthValue
+        widthValue:SetPoint("LEFT", widthSlider, "RIGHT", 12, 0)
+        widthValue:SetWidth(48)
+        widthValue:SetJustifyH("RIGHT")
+        table.insert(settingsFrame.themeLabels, widthValue)
+
+        local heightLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        heightLabel:SetPoint("TOPLEFT", 34, -278)
+        heightLabel:SetText("Alto")
+        table.insert(settingsFrame.themeLabels, heightLabel)
+
+        local heightSlider = CreateFrame("Slider", "CartasHeightSlider", settingsFrame, "OptionsSliderTemplate")
+        settingsFrame.heightSlider = heightSlider
+        heightSlider:SetPoint("TOPLEFT", 140, -270)
+        heightSlider:SetSize(250, 20)
+        heightSlider:SetValueStep(20)
+        if heightSlider.SetObeyStepOnDrag then heightSlider:SetObeyStepOnDrag(true) end
+
+        local heightValue = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        settingsFrame.heightValue = heightValue
+        heightValue:SetPoint("LEFT", heightSlider, "RIGHT", 12, 0)
+        heightValue:SetWidth(48)
+        heightValue:SetJustifyH("RIGHT")
+        table.insert(settingsFrame.themeLabels, heightValue)
+
+        local defaults = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+        defaults:SetSize(110, 28)
+        defaults:SetPoint("BOTTOMLEFT", 28, 22)
+        defaults:SetText("Restablecer")
+
+        local done = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+        done:SetSize(100, 28)
+        done:SetPoint("BOTTOMRIGHT", -28, 22)
+        done:SetText("Cerrar")
+        done:SetScript("OnClick", function() settingsFrame:Hide() end)
+
+        local function RefreshControls()
+            local settings = EnsureUISettings()
+            local minWidth, maxWidth, minHeight, maxHeight = GetHistorySizeLimits()
+            if settings.theme == UI_THEME_CLASSIC then
+                classicButton:Disable()
+                parchmentButton:Enable()
+            else
+                classicButton:Enable()
+                parchmentButton:Disable()
+            end
+            settingsFrame.updatingControls = true
+            widthSlider:SetMinMaxValues(minWidth, maxWidth)
+            heightSlider:SetMinMaxValues(minHeight, maxHeight)
+            if CartasWidthSliderLow then CartasWidthSliderLow:SetText(tostring(minWidth)) end
+            if CartasWidthSliderHigh then CartasWidthSliderHigh:SetText(tostring(maxWidth)) end
+            if CartasWidthSliderText then CartasWidthSliderText:SetText("") end
+            if CartasHeightSliderLow then CartasHeightSliderLow:SetText(tostring(minHeight)) end
+            if CartasHeightSliderHigh then CartasHeightSliderHigh:SetText(tostring(maxHeight)) end
+            if CartasHeightSliderText then CartasHeightSliderText:SetText("") end
+            opacitySlider:SetValue(math.floor((settings.opacity * 100) + 0.5))
+            widthSlider:SetValue(settings.width)
+            heightSlider:SetValue(settings.height)
+            settingsFrame.updatingControls = nil
+            opacityValue:SetFormattedText("%d%%", math.floor((settings.opacity * 100) + 0.5))
+            widthValue:SetFormattedText("%d", settings.width)
+            heightValue:SetFormattedText("%d", settings.height)
+            ApplySettingsFrameTheme(settingsFrame)
+        end
+        settingsFrame.refreshControls = RefreshControls
+
+        classicButton:SetScript("OnClick", function()
+            SetVisualSettings(UI_THEME_CLASSIC)
+            ApplyVisibleUITheme()
+            RefreshControls()
+        end)
+        parchmentButton:SetScript("OnClick", function()
+            SetVisualSettings(UI_THEME_PARCHMENT)
+            ApplyVisibleUITheme()
+            RefreshControls()
+        end)
+        opacitySlider:SetScript("OnValueChanged", function(_, value)
+            if settingsFrame.updatingControls == true then return end
+            local rounded = math.floor((tonumber(value) or 100) / 5 + 0.5) * 5
+            SetVisualSettings(nil, rounded / 100)
+            opacityValue:SetFormattedText("%d%%", rounded)
+            ApplyVisibleUITheme()
+        end)
+        widthSlider:SetScript("OnValueChanged", function(_, value)
+            if settingsFrame.updatingControls == true then return end
+            local rounded = math.floor((tonumber(value) or HISTORY_WIDTH_DEFAULT) / 20 + 0.5) * 20
+            local settings = SetVisualSettings(nil, nil, rounded, nil)
+            widthValue:SetFormattedText("%d", settings.width)
+            ApplyVisibleUITheme()
+        end)
+        heightSlider:SetScript("OnValueChanged", function(_, value)
+            if settingsFrame.updatingControls == true then return end
+            local rounded = math.floor((tonumber(value) or HISTORY_HEIGHT_DEFAULT) / 20 + 0.5) * 20
+            local settings = SetVisualSettings(nil, nil, nil, rounded)
+            heightValue:SetFormattedText("%d", settings.height)
+            ApplyVisibleUITheme()
+        end)
+        defaults:SetScript("OnClick", function()
+            SetVisualSettings(UI_THEME_PARCHMENT, 1, HISTORY_WIDTH_DEFAULT, HISTORY_HEIGHT_DEFAULT)
+            ApplyVisibleUITheme()
+            RefreshControls()
+        end)
+    end
+
+    activeSettings.refreshControls()
+    activeSettings:Show()
+end
+
 local function OpenHistoryFrame()
     EnsureDB()
 
     if CartasFrame then
+        ApplyHistoryFrameTheme(CartasFrame)
         CartasFrame:Show()
         return
     end
 
+    local settings = EnsureUISettings()
+    local contentWidth = math.max(640, settings.width - 80)
     local f = CreateFrame("Frame", "CartasFrame", UIParent, "BackdropTemplate")
-    f:SetSize(900, 650)
+    f:SetSize(settings.width, settings.height)
     f:SetPoint("CENTER")
     f:SetFrameStrata("HIGH")
     f:SetMovable(true)
@@ -1421,29 +2174,36 @@ local function OpenHistoryFrame()
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    f:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 }
-    })
-    f:SetBackdropColor(0.04, 0.04, 0.06, 0.98)
+    ApplyWindowTheme(f)
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    f.themeTitle = title
     title:SetPoint("TOP", 0, -14)
     title:SetText("Cartas")
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -4, -4)
 
-    local search = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-    search:SetSize(250, 28)
-    search:SetPoint("TOPLEFT", 18, -48)
+    local searchPanel = CreateFrame("Frame", nil, f, "BackdropTemplate")
+    f.themeSearchPanel = searchPanel
+    searchPanel:SetSize(250, 28)
+    searchPanel:SetPoint("TOPLEFT", 18, -48)
+    ApplyPanelTheme(searchPanel, "search", true)
+
+    local search = CreateFrame("EditBox", nil, searchPanel)
+    search:SetPoint("TOPLEFT", 8, -3)
+    search:SetPoint("BOTTOMRIGHT", -8, 3)
+    search:SetFontObject(GameFontHighlight)
+    search:SetJustifyH("LEFT")
+    search:SetJustifyV("MIDDLE")
+    search:SetTextInsets(2, 2, 0, 0)
+    search:EnableMouse(true)
     search:SetAutoFocus(false)
+    f.themeSearch = search
 
     local button = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     button:SetSize(82, 28)
-    button:SetPoint("LEFT", search, "RIGHT", 8, 0)
+    button:SetPoint("LEFT", searchPanel, "RIGHT", 8, 0)
     button:SetText("Buscar")
 
     local newButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
@@ -1472,6 +2232,12 @@ local function OpenHistoryFrame()
         if activeMailRefresh then activeMailRefresh() end
     end)
 
+    local settingsButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    settingsButton:SetSize(90, 28)
+    settingsButton:SetPoint("LEFT", restoreButton, "RIGHT", 8, 0)
+    settingsButton:SetText("Apariencia")
+    settingsButton:SetScript("OnClick", OpenVisualSettings)
+
     local mailboxButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     mailboxButton:SetSize(90, 28)
     mailboxButton:SetPoint("RIGHT", close, "LEFT", -8, 0)
@@ -1482,24 +2248,64 @@ local function OpenHistoryFrame()
     end)
 
     local hint = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    f.themeHint = hint
     hint:SetPoint("TOPLEFT", 20, -78)
     hint:SetPoint("RIGHT", -20, 0)
     hint:SetJustifyH("LEFT")
-    hint:SetText("Busca un personaje · [NUEVA] = pendiente · Leer, recoger, responder y enviar desde Cartas")
+    hint:SetText("ARCHIVO DE CORRESPONDENCIA")
 
     local list = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
     list:SetPoint("TOPLEFT", 18, -100)
     list:SetPoint("BOTTOMRIGHT", -38, 18)
 
     local content = CreateFrame("Frame", nil, list)
-    content:SetWidth(820)
+    content:SetWidth(contentWidth)
     list:SetScrollChild(content)
+
+    local function LayoutHistoryControls()
+        local compact = f:GetWidth() < 960
+        f.compactLayout = compact
+
+        searchPanel:ClearAllPoints()
+        button:ClearAllPoints()
+        newButton:ClearAllPoints()
+        deleteAllButton:ClearAllPoints()
+        restoreButton:ClearAllPoints()
+        settingsButton:ClearAllPoints()
+        hint:ClearAllPoints()
+        list:ClearAllPoints()
+
+        searchPanel:SetPoint("TOPLEFT", 18, -48)
+        button:SetPoint("LEFT", searchPanel, "RIGHT", 8, 0)
+        newButton:SetPoint("LEFT", button, "RIGHT", 8, 0)
+
+        if compact then
+            settingsButton:SetPoint("LEFT", newButton, "RIGHT", 8, 0)
+            deleteAllButton:SetPoint("TOPLEFT", 18, -82)
+            restoreButton:SetPoint("LEFT", deleteAllButton, "RIGHT", 8, 0)
+            hint:SetPoint("TOPLEFT", 20, -116)
+            list:SetPoint("TOPLEFT", 18, -138)
+        else
+            deleteAllButton:SetPoint("LEFT", newButton, "RIGHT", 8, 0)
+            restoreButton:SetPoint("LEFT", deleteAllButton, "RIGHT", 8, 0)
+            settingsButton:SetPoint("LEFT", restoreButton, "RIGHT", 8, 0)
+            hint:SetPoint("TOPLEFT", 20, -78)
+            list:SetPoint("TOPLEFT", 18, -100)
+        end
+
+        hint:SetPoint("RIGHT", -20, 0)
+        list:SetPoint("BOTTOMRIGHT", -38, 18)
+    end
 
     local expandedParticipants = {}
     local expandedThreads = {}
     local liveInboxExpanded = true
 
     local function Refresh()
+        local theme = GetTheme()
+        ApplyHistoryFrameTheme(f)
+        LayoutHistoryControls()
+        contentWidth = math.max(640, f:GetWidth() - 80)
         for _, child in ipairs({content:GetChildren()}) do
             child:Hide()
             child:SetParent(nil)
@@ -1518,7 +2324,7 @@ local function OpenHistoryFrame()
         local participants = BuildParticipantGroups(all, targetLower)
 
         local y = -4
-        local maxRight = 820
+        local maxRight = contentWidth
         local liveInbox = GetLiveInbox()
 
         -- IMPORTANT: the live Blizzard inbox is rendered separately from the
@@ -1542,15 +2348,14 @@ local function OpenHistoryFrame()
         if #liveInbox > 0 then
             local ih = CreateFrame("Button", nil, content, "BackdropTemplate")
             ih:SetPoint("TOPLEFT", 0, y)
-            ih:SetSize(820, 34)
+            ih:SetSize(contentWidth, 34)
             ih:RegisterForClicks("LeftButtonUp")
-            ih:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
-            ih:SetBackdropColor(0.16,0.12,0.08,0.95)
+            ApplyPanelTheme(ih, "inboxHeader")
             ih:SetScript("OnEnter", function(self)
-                self:SetBackdropColor(0.22,0.17,0.11,0.95)
+                SetPanelThemeColor(self, "inboxHeaderHover")
             end)
             ih:SetScript("OnLeave", function(self)
-                self:SetBackdropColor(0.16,0.12,0.08,0.95)
+                SetPanelThemeColor(self, "inboxHeader")
             end)
             ih:SetScript("OnClick", function()
                 liveInboxExpanded = not liveInboxExpanded
@@ -1559,7 +2364,7 @@ local function OpenHistoryFrame()
             local iht = ih:CreateFontString(nil,"OVERLAY","GameFontNormal")
             iht:SetPoint("LEFT",10,0)
             local inboxMarker = liveInboxExpanded and "[-]" or "[+]"
-            iht:SetText(inboxMarker.."  |cffFFD100BUZÓN ACTUAL|r  —  |cffaaaaaa"..tostring(#liveInbox).." correo(s)|r")
+            iht:SetText(inboxMarker.."  "..ColorText(theme.hex.accent, "BUZÓN ACTUAL").."  —  "..ColorText(theme.hex.muted, tostring(#liveInbox).." correo(s)"))
             y = y - 40
 
             if liveInboxExpanded then
@@ -1569,17 +2374,16 @@ local function OpenHistoryFrame()
                 local isNew = IsLiveInboxMailNew(live)
                 local card = CreateFrame("Frame", nil, content, "BackdropTemplate")
                 card:SetPoint("TOPLEFT", 0, y)
-                card:SetWidth(820)
-                card:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
-                card:SetBackdropColor(0.10,0.10,0.12,0.94)
+                card:SetWidth(contentWidth)
+                ApplyPanelTheme(card, "inboxCard")
 
                 local header = card:CreateFontString(nil,"OVERLAY","GameFontNormal")
                 header:SetPoint("TOPLEFT",10,-8)
                 header:SetPoint("RIGHT",-210,0)
                 header:SetJustifyH("LEFT")
-                local readText = isNew and "|cff7CFF00[NUEVA]|r" or "|cffaaaaaa[LEÍDA]|r"
-                local typeText = live.canReply and "|cff66ccffJUGADOR|r" or "|cffaaaaaaSISTEMA|r"
-                header:SetText("|cff66ff66📥 DE:|r |cffFFD100"..live.sender.."|r  "..readText.."  "..typeText..(live.subject ~= "" and "  —  |cffaaaaaa["..live.subject.."]|r" or ""))
+                local readText = isNew and ColorText(theme.hex.new, "[NUEVA]") or ColorText(theme.hex.muted, "[LEÍDA]")
+                local typeText = live.canReply and ColorText(theme.hex.outgoing, "JUGADOR") or ColorText(theme.hex.muted, "SISTEMA")
+                header:SetText(ColorText(theme.hex.incoming, "RECIBIDA DE:").." "..ColorText(theme.hex.accent, live.sender).."  "..readText.."  "..typeText..(live.subject ~= "" and "  —  "..ColorText(theme.hex.muted, "["..live.subject.."]") or ""))
 
                 local body = card:CreateFontString(nil,"OVERLAY","GameFontHighlight")
                 body:SetPoint("TOPLEFT",10,-31)
@@ -1589,6 +2393,7 @@ local function OpenHistoryFrame()
                 body:SetWordWrap(true)
                 body:SetNonSpaceWrap(true)
                 body:SetText(stored and stored.body ~= "" and stored.body or "(sin abrir)")
+                SetTextThemeColor(body, theme.body)
 
                 local readBtn = CreateFrame("Button",nil,card,"UIPanelButtonTemplate")
                 readBtn:SetSize(76,26)
@@ -1657,7 +2462,7 @@ local function OpenHistoryFrame()
                 if live.canReply then
                     replyBtn = CreateFrame("Button",nil,card,"UIPanelButtonTemplate")
                     replyBtn:SetSize(105,26)
-                    replyBtn:SetPoint("TOPRIGHT",-8,-40)
+                    replyBtn:SetPoint("TOPRIGHT",-122,-40)
                     replyBtn:SetText("Responder")
                     replyBtn:SetScript("OnClick",function()
                         -- Reply does not need to open/read the Blizzard message first.
@@ -1668,16 +2473,25 @@ local function OpenHistoryFrame()
                     end)
                 end
 
+                local deleteInboxBtn = CreateFrame("Button",nil,card,"UIPanelButtonTemplate")
+                deleteInboxBtn:SetSize(105,26)
+                deleteInboxBtn:SetPoint("TOPRIGHT",-8,-40)
+                deleteInboxBtn:SetText("Borrar")
+                deleteInboxBtn:SetScript("OnClick",function()
+                    RequestDeleteLiveInboxMail(live.inboxIndex)
+                end)
+
                 local items = GetInboxAttachments(live.inboxIndex)
                 local attachText = ""
-                if live.money and live.money > 0 then attachText = "💰 Dinero adjunto" end
+                if live.money and live.money > 0 then attachText = "Dinero adjunto" end
                 if #items > 0 then
                     attachText = attachText ~= "" and attachText.."  ·  " or ""
-                    attachText = attachText.."📦 "..#items.." objeto(s)"
+                    attachText = attachText..#items.." objeto(s)"
                 end
                 local extra = card:CreateFontString(nil,"OVERLAY","GameFontNormalSmall")
                 extra:SetPoint("BOTTOMLEFT",10,8)
                 extra:SetText(attachText)
+                SetTextThemeColor(extra, theme.hint)
 
                 -- Reserve enough vertical space for every wrapped line.  The
                 -- text column has a fixed width, so long mails can never spill
@@ -1698,14 +2512,13 @@ local function OpenHistoryFrame()
 
             local hh = CreateFrame("Frame", nil, content, "BackdropTemplate")
             hh:SetPoint("TOPLEFT", 0, y)
-            hh:SetSize(820, 34)
-            hh:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
-            hh:SetBackdropColor(0.10,0.14,0.10,0.95)
+            hh:SetSize(contentWidth, 34)
+            ApplyPanelTheme(hh, "historyHeader")
             local hht = hh:CreateFontString(nil,"OVERLAY","GameFontNormal")
             hht:SetPoint("LEFT",10,0)
             local participantLabel = #participants == 1 and "interlocutor" or "interlocutores"
             local conversationCountLabel = conversationCount == 1 and "conversación" or "conversaciones"
-            hht:SetText("|cff7CFF00HISTORIAL GUARDADO|r  —  |cffaaaaaa"..#participants.." "..participantLabel.." · "..conversationCount.." "..conversationCountLabel.."|r")
+            hht:SetText(ColorText(theme.hex.accent, "HISTORIAL GUARDADO").."  —  "..ColorText(theme.hex.muted, #participants.." "..participantLabel.." · "..conversationCount.." "..conversationCountLabel))
             y = y - 40
         end
 
@@ -1714,15 +2527,14 @@ local function OpenHistoryFrame()
 
             local participantHeader = CreateFrame("Button", nil, content, "BackdropTemplate")
             participantHeader:SetPoint("TOPLEFT", 0, y)
-            participantHeader:SetSize(820, 36)
+            participantHeader:SetSize(contentWidth, 36)
             participantHeader:RegisterForClicks("LeftButtonUp")
-            participantHeader:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
-            participantHeader:SetBackdropColor(0.10,0.11,0.15,0.98)
+            ApplyPanelTheme(participantHeader, "participant")
             participantHeader:SetScript("OnEnter", function(self)
-                self:SetBackdropColor(0.15,0.16,0.21,0.98)
+                SetPanelThemeColor(self, "participantHover")
             end)
             participantHeader:SetScript("OnLeave", function(self)
-                self:SetBackdropColor(0.10,0.11,0.15,0.98)
+                SetPanelThemeColor(self, "participant")
             end)
             participantHeader:SetScript("OnClick", function()
                 expandedParticipants[participant.key] = not isExpanded
@@ -1737,9 +2549,9 @@ local function OpenHistoryFrame()
             local conversationLabel = #participant.threads == 1 and "conversación" or "conversaciones"
             local mailLabel = participant.messageCount == 1 and "carta" or "cartas"
             local newLabel = participant.newCount == 1 and "NUEVA" or "NUEVAS"
-            local newText = participant.newCount > 0 and "  |cff7CFF00["..participant.newCount.." "..newLabel.."]|r" or ""
+            local newText = participant.newCount > 0 and "  "..ColorText(theme.hex.new, "["..participant.newCount.." "..newLabel.."]") or ""
             local latestText = participant.latest > 0 and FormatDate(participant.latest) or "sin fecha"
-            participantText:SetText(marker.."  |cffFFD100"..participant.name.."|r"..newText.."  |cffaaaaaa· "..#participant.threads.." "..conversationLabel.." · "..participant.messageCount.." "..mailLabel.." · "..latestText.."|r")
+            participantText:SetText(marker.."  "..ColorText(theme.hex.accent, participant.name)..newText.."  "..ColorText(theme.hex.muted, "· "..#participant.threads.." "..conversationLabel.." · "..participant.messageCount.." "..mailLabel.." · "..latestText))
             y = y - 40
 
             if isExpanded then
@@ -1749,15 +2561,14 @@ local function OpenHistoryFrame()
                     local isThreadExpanded = ResolveExpandedState(expandedThreads, thread.key, target ~= nil)
                     local th = CreateFrame("Button",nil,content,"BackdropTemplate")
                     th:SetPoint("TOPLEFT",threadIndent,y)
-                    th:SetSize(820 - threadIndent,34)
+                    th:SetSize(contentWidth - threadIndent,34)
                     th:RegisterForClicks("LeftButtonUp")
-                    th:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
-                    th:SetBackdropColor(0.12,0.12,0.16,0.95)
+                    ApplyPanelTheme(th, "thread")
                     th:SetScript("OnEnter", function(self)
-                        self:SetBackdropColor(0.17,0.17,0.22,0.95)
+                        SetPanelThemeColor(self, "threadHover")
                     end)
                     th:SetScript("OnLeave", function(self)
-                        self:SetBackdropColor(0.12,0.12,0.16,0.95)
+                        SetPanelThemeColor(self, "thread")
                     end)
                     th:SetScript("OnClick", function()
                         expandedThreads[thread.key] = not isThreadExpanded
@@ -1770,8 +2581,8 @@ local function OpenHistoryFrame()
                     local threadMailLabel = #chain == 1 and "carta" or "cartas"
                     local threadMarker = isThreadExpanded and "[-]" or "[+]"
                     local threadNewLabel = thread.newCount == 1 and "NUEVA" or "NUEVAS"
-                    local threadNewText = thread.newCount > 0 and "  |cff7CFF00["..thread.newCount.." "..threadNewLabel.."]|r" or ""
-                    txt:SetText(threadMarker.."  |cffFFD100CONVERSACIÓN|r"..threadNewText.."  —  |cffaaaaaa"..thread.subject.." · "..#chain.." "..threadMailLabel.."|r")
+                    local threadNewText = thread.newCount > 0 and "  "..ColorText(theme.hex.new, "["..thread.newCount.." "..threadNewLabel.."]") or ""
+                    txt:SetText(threadMarker.."  "..ColorText(theme.hex.accent, "CONVERSACIÓN")..threadNewText.."  —  "..ColorText(theme.hex.muted, thread.subject.." · "..#chain.." "..threadMailLabel))
                     y = y - 40
 
                     if isThreadExpanded then
@@ -1780,7 +2591,7 @@ local function OpenHistoryFrame()
                         -- Keep one visual reply level and use time for conversation order.
                         local depth = mail.isReply and 1 or 0
                         local indent = threadIndent + (depth * 34)
-                        local cardWidth = math.max(560, 820 - indent)
+                        local cardWidth = math.max(560, contentWidth - indent)
                         local card = CreateFrame("Button",nil,content,"BackdropTemplate")
                         card:SetPoint("TOPLEFT",indent,y)
                         card:SetWidth(cardWidth)
@@ -1792,13 +2603,12 @@ local function OpenHistoryFrame()
                                 Refresh()
                             end
                         end)
-                        card:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",tile=true,tileSize=8,edgeSize=8,insets={left=3,right=3,top=3,bottom=3}})
-                        card:SetBackdropColor(mail.direction=="in" and 0.08 or 0.08, mail.direction=="in" and 0.12 or 0.09, mail.direction=="in" and 0.08 or 0.15, 0.94)
+                        ApplyPanelTheme(card, mail.direction == "in" and "incoming" or "outgoing")
 
                         if depth > 0 then
                             local arrow=card:CreateFontString(nil,"OVERLAY","GameFontNormalLarge")
                             arrow:SetPoint("TOPLEFT",-25,-7)
-                            arrow:SetText("|cffaaaaaa↳|r")
+                            arrow:SetText(ColorText(theme.hex.muted, "RE"))
                         end
 
                         local header=card:CreateFontString(nil,"OVERLAY","GameFontNormal")
@@ -1806,9 +2616,9 @@ local function OpenHistoryFrame()
                         header:SetPoint("RIGHT",-10,0)
                         header:SetJustifyH("LEFT")
                         local who=mail.person or mail.sender or mail.recipient or "?"
-                        local directionText=mail.direction=="in" and "|cff66ff66📥 RECIBIDA DE:|r" or "|cff66ccff📤 ENVIADA A:|r"
-                        local messageNewText=mail.isNew and "  |cff7CFF00[NUEVA]|r" or ""
-                        header:SetText(directionText.." |cffFFD100"..who.."|r"..messageNewText.."  —  "..(mail.date or FormatDate(mail.timestamp))..((mail.subject and mail.subject~="") and "  |cffaaaaaa["..mail.subject.."]|r" or ""))
+                        local directionText=mail.direction=="in" and ColorText(theme.hex.incoming, "RECIBIDA DE:") or ColorText(theme.hex.outgoing, "ENVIADA A:")
+                        local messageNewText=mail.isNew and "  "..ColorText(theme.hex.new, "[NUEVA]") or ""
+                        header:SetText(directionText.." "..ColorText(theme.hex.accent, who)..messageNewText.."  —  "..ColorText(theme.hex.secondary, (mail.date or FormatDate(mail.timestamp))..((mail.subject and mail.subject~="") and "  ["..mail.subject.."]" or "")))
 
                         local body=card:CreateFontString(nil,"OVERLAY","GameFontHighlight")
                         body:SetPoint("TOPLEFT",10,-30)
@@ -1818,6 +2628,7 @@ local function OpenHistoryFrame()
                         body:SetWordWrap(true)
                         body:SetNonSpaceWrap(true)
                         body:SetText(mail.body~="" and mail.body or "(sin contenido guardado)")
+                        SetTextThemeColor(body, theme.body)
 
                         local deleteBtn=CreateFrame("Button",nil,card,"UIPanelButtonTemplate")
                         deleteBtn:SetSize(76,24)
@@ -1848,7 +2659,7 @@ local function OpenHistoryFrame()
             end
         end
 
-        content:SetWidth(820)
+        content:SetWidth(contentWidth)
         content:SetHeight(math.max(1,-y))
     end
 
@@ -1930,10 +2741,16 @@ if _G and _G.CartasTestMode then
         EnsureArchive = EnsureArchive,
         MigrateCorrespondencia = MigrateCorrespondencia,
         AuditArchiveDuplicates = AuditArchiveDuplicates,
+        BuildTechnicalDuplicateAliases = BuildTechnicalDuplicateAliases,
         SavePendingMail = SavePendingMail,
         ScanInbox = ScanInbox,
         CaptureInboxMail = CaptureInboxMail,
         GetLiveInbox = GetLiveInbox,
+        GetLiveInboxDeleteState = GetLiveInboxDeleteState,
+        DescribeLiveInboxProtectedContents = DescribeLiveInboxProtectedContents,
+        SameLiveInboxRow = SameLiveInboxRow,
+        DeleteLiveInboxMail = DeleteLiveInboxMail,
+        RequestDeleteLiveInboxMail = RequestDeleteLiveInboxMail,
         IsLiveInboxMailNew = IsLiveInboxMailNew,
         IsMailNew = IsMailNew,
         GetAllCorrespondence = GetAllCorrespondence,
@@ -1961,6 +2778,25 @@ if _G and _G.CartasTestMode then
         GetHiddenHistoryCount = GetHiddenHistoryCount,
         ResolveExpandedState = ResolveExpandedState,
         ShowFrameWithInitialRefresh = ShowFrameWithInitialRefresh,
+        ClampUIOpacity = ClampUIOpacity,
+        ClampHistoryWidth = ClampHistoryWidth,
+        ClampHistoryHeight = ClampHistoryHeight,
+        GetHistorySizeLimits = GetHistorySizeLimits,
+        EnsureUISettings = EnsureUISettings,
+        SetVisualSettings = SetVisualSettings,
+        OpenHistoryFrame = OpenHistoryFrame,
+        OpenVisualSettings = OpenVisualSettings,
+        OpenCompose = OpenCompose,
+        UI_THEME_CLASSIC = UI_THEME_CLASSIC,
+        UI_THEME_PARCHMENT = UI_THEME_PARCHMENT,
+        UI_OPACITY_MIN = UI_OPACITY_MIN,
+        UI_OPACITY_MAX = UI_OPACITY_MAX,
+        HISTORY_WIDTH_DEFAULT = HISTORY_WIDTH_DEFAULT,
+        HISTORY_WIDTH_MIN = HISTORY_WIDTH_MIN,
+        HISTORY_WIDTH_MAX = HISTORY_WIDTH_MAX,
+        HISTORY_HEIGHT_DEFAULT = HISTORY_HEIGHT_DEFAULT,
+        HISTORY_HEIGHT_MIN = HISTORY_HEIGHT_MIN,
+        HISTORY_HEIGHT_MAX = HISTORY_HEIGHT_MAX,
     }
 end
 

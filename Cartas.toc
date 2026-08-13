@@ -2,7 +2,7 @@
 ## Title: Cartas
 ## Notes: Conserva el historial de tus cartas enviadas y recibidas para roleo.
 ## Author: Cartas contributors
-## Version: 1.9.0-rc8
+## Version: 1.10.0
 ## X-Curse-Project-ID: 1648457
 ## SavedVariables: CartasDB, CorrespondenciaDB
 

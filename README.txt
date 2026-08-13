@@ -1,4 +1,4 @@
-# Cartas v1.9.0-rc8
+# Cartas v1.10.0
 
 Addon para World of Warcraft Retail / Midnight que conserva la correspondencia
 enviada y recibida y la presenta como conversaciones.
@@ -7,7 +7,8 @@ enviada y recibida y la presenta como conversaciones.
 
 - Las cartas enviadas ya no se limitan a 500 registros.
 - No se elimina ninguna carta mediante deduplicación heurística.
-- Eliminar u "Eliminar todo" solo oculta registros; Restaurar los recupera.
+- Eliminar u "Eliminar todo" dentro del historial solo oculta registros;
+  Restaurar los recupera.
 - `/cartas limpiar` abre una confirmación y tampoco destruye datos.
 - El almacén permanente de recibidos nunca se reconstruye desde el buzón actual.
 - Auction House, Customer Support y demás correo de sistema permanecen en el
@@ -53,6 +54,12 @@ Al cargar esta versión se corrigen los timestamps futuros creados por versiones
 anteriores. La fecha y el timestamp previos se conservan como metadatos de
 respaldo; la reparación no elimina ni fusiona cartas.
 
+Las versiones que pasaron del horizonte antiguo de 30 días al actual de 31
+pudieron volver a archivar una carta cuando esta cambió de fila en el buzón.
+Cartas reconoce únicamente esa firma técnica completa y omite la copia antigua
+en la vista. Ambos registros siguen intactos en el archivo. Dos cartas iguales
+sin esa prueba se mantienen como cartas independientes.
+
 ## Secciones desplegables
 
 El historial agrupa primero por personaje y después por conversación. Los
@@ -64,6 +71,35 @@ personaje, sus resultados se abren automáticamente.
 BUZÓN ACTUAL es desplegable y empieza abierto. La ventana carga sus correos en la
 primera apertura sin tener que pulsar Buscar.
 
+El botón Borrar elimina el correo real del buzón de Blizzard después de una
+confirmación. Antes solicita y archiva su cuerpo. Si detecta objetos, dinero o
+un pago contra reembolso, cancela el borrado y pide gestionar primero el
+contenido. Los correos que WoW solo permite devolver tampoco se devuelven de
+forma automática. La copia histórica de Cartas permanece intacta.
+
+## Apariencia
+
+El botón Apariencia permite alternar entre dos presentaciones sin recargar:
+
+- Clásico: recupera el panel oscuro y compacto del addon.
+- Pergamino: usa tinta oscura, papel opaco y texturas incluidas en WoW.
+
+La opacidad de los fondos se ajusta entre 55% y 100%; el texto permanece opaco
+para conservar su legibilidad. El buscador usa siempre un fondo opaco acorde al
+tema para que el nombre escrito no se mezcle con la textura de la ventana.
+
+En el mismo diálogo se puede ajustar el ancho y el alto de la ventana. El cambio
+se previsualiza inmediatamente y se limita al espacio disponible en pantalla.
+Al reducir el ancho, los controles superiores se reparten automáticamente en
+dos filas para conservar un modo compacto sin solapamientos. El ancho mínimo es
+760, frente a los 960 de la iteración anterior.
+Pergamino al 100% y un tamaño de 1020 x 720 son los valores predeterminados.
+Estas preferencias se guardan en `CartasDB.ui` y no modifican ninguna carta.
+
+La organización manual se ha retirado de esta versión. Si una iteración local
+anterior creó `threadOrganization`, sus datos se conservan pero no se leen ni se
+presentan en la interfaz.
+
 ## Uso
 
 - `/cartas` abre el historial.
@@ -72,7 +108,7 @@ primera apertura sin tener que pulsar Buscar.
 - `/cartas restaurar` recupera todas las cartas ocultas.
 - El botón C del buzón abre Cartas.
 - Leer/Ver carga y archiva el cuerpo que Blizzard exponga.
-- Recoger y Responder actúan sobre el correo real del buzón.
+- Recoger, Responder y Borrar actúan sobre el correo real del buzón.
 
 ## Pruebas locales
 

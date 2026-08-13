@@ -26,6 +26,14 @@ añade las ausentes. Ejecutarla varias veces debe producir el mismo resultado.
 `deletedArchive` evita reimportaciones legado. Desde 1.9.0 los registros no se
 eliminan: `hidden=true` los oculta y Restaurar revierte la marca.
 
+`ui` contiene solo preferencias visuales: `theme` (`classic` o `parchment`),
+`opacity` (0.55-1), `width` y `height`. Los fondos aplican esa opacidad sin
+reducir la del texto. El tamaño se limita al rango admitido y al espacio actual
+de `UIParent`; cambiarlo recalcula el ancho de filas, tarjetas y texto.
+La organización manual no forma parte de esta versión. Una tabla legado
+`threadOrganization` puede permanecer en SavedVariables, pero no se inicializa,
+consulta, modifica ni usa para agrupar conversaciones.
+
 ## Captura de enviados
 
 El hook de `SendMail` deja un mensaje pendiente. Solo `MAIL_SEND_SUCCESS` llama a
@@ -51,11 +59,25 @@ El correo normal usa un horizonte de 31 días porque Retail puede devolver
 visualmente todas las enviadas antes de las recibidas. La estimación limita el
 remanente al horizonte para que nunca avance respecto al reloj del escaneo.
 
+`FindLiveArchiveMatch` también reconoce un registro cuyo timestamp demuestra
+haber sido calculado con el horizonte legado de 30 días. Si la estimación actual
+queda exactamente un día antes y el registro encaja con su último `daysLeft`, se
+reutiliza y corrige esa misma entrada aunque la fila del buzón haya cambiado,
+pero solo cuando el cuerpo ya se puede leer y coincide exactamente. Una carta no
+leída nunca se fusiona usando solo cabecera y tiempo. El timestamp y la fecha
+anteriores se conservan antes de modificarla.
+
 `RepairImpossibleFutureTimestamps` migra registros de versiones anteriores solo
 cuando `timestamp > _firstSeenAt + 300`. Resta el día introducido por la fórmula
 antigua, limita el resultado a la primera observación y conserva los valores
 anteriores en `_timestampBeforeExpiryFix` y `_dateBeforeExpiryFix`. Es una
 corrección idempotente y no destructiva.
+
+`BuildTechnicalDuplicateAliases` trabaja solo en memoria. Omite de la vista la
+copia antigua cuando dos recibidas tienen propietario, remitente, asunto y cuerpo
+idénticos, difieren un día y cada una demuestra respectivamente los horizontes
+de 30 y 31 días en escaneos consecutivos. No borra, fusiona, oculta ni modifica
+ningún registro. Las repeticiones que no prueban toda esa firma siguen visibles.
 
 El escaneo solo llama a `GetInboxText` cuando la cabecera ya tiene
 `wasRead=true`; solicitar el cuerpo de una carta no leída puede cambiar su estado
@@ -90,10 +112,25 @@ ascendente. La expansión es estado efímero de la ventana y no escribe en
 una búsqueda abre sus coincidencias automáticamente. `BUZÓN ACTUAL` es otra
 sección desplegable y empieza abierta.
 
+La jerarquía y el orden son idénticos en Clásico y Pergamino. El tema solo cambia
+backdrops, colores y texturas. Pergamino combina una base de color completa con
+`QuestBG`; a 100% no deja zonas transparentes aunque la textura artística tenga
+canal alfa. El buscador tiene su propio panel opaco para mantener contraste con
+la tinta en ambos temas. El diálogo Apariencia permite cambiar tema, opacidad,
+ancho y alto en caliente.
+
 Las filas de `BUZÓN ACTUAL` derivan NUEVA/LEÍDA exclusivamente del `wasRead` de
 la cabecera viva. El archivo puede aportar un cuerpo ya conservado, pero su
 estado histórico no modifica esa etiqueta. La inicialización llama a `Refresh`
 incluso si el frame nace visible y, después, `OnShow` mantiene las reaperturas.
+
+`RequestDeleteLiveInboxMail` separa el borrado real del borrado lógico del
+historial. Consulta de nuevo cabecera y adjuntos, bloquea objetos, dinero y COD,
+y exige que `InboxItemCanDelete` permita eliminar en vez de devolver. Tras la
+confirmación, `DeleteLiveInboxMail` verifica que la fila siga representando el
+mismo correo, ejecuta `CaptureInboxMail` y vuelve a comprobarla antes de llamar
+a `DeleteInboxItem`. Un cambio de fila, una operación pendiente o un fallo de
+captura cancela el proceso. Ninguna de estas rutas elimina datos de `archive`.
 
 Antes de crear conversaciones, `IsConversationMail` excluye recibidos con
 `canReply == false` y mensajes con `isGM == true`. Es la misma clasificación que
@@ -121,3 +158,13 @@ instantánea de campos y confirma que inicialización, migración y lectura no
 reducen tablas ni cambian campos previos. La única mutación admitida es la
 reparación de timestamp cuando los valores originales quedan preservados en sus
 campos de respaldo. Ningún test escribe SavedVariables.
+
+El mock construye historial, compositor y ajustes en ambos temas. La regresión
+visual de humo comprueba que cambiar estilo, opacidad o tamaño no solicita
+cuerpos de correo no leído, que el buscador mantiene un fondo opaco y que el
+compositor conserva un cuerpo prellenado. Otras regresiones desplazan filas del
+buzón durante la migración 30→31, conservan ambos registros de un alias técnico y
+mantienen visibles dos cartas legítimas con contenido idéntico. El borrado del
+buzón se prueba solo contra mocks: objetos, dinero, COD, correos retornables y
+cambios de fila deben bloquearlo; el caso permitido debe archivar el cuerpo
+antes de retirar la fila simulada.

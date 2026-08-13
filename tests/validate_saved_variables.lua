@@ -26,6 +26,9 @@ local API = assert(CartasTestAPI)
 API.EnsureDB()
 API.EnsureArchive()
 local duplicateCandidates = API.AuditArchiveDuplicates()
+local technicalAliases = API.BuildTechnicalDuplicateAliases(CartasDB.archive)
+local technicalDuplicateCount = 0
+for _ in pairs(technicalAliases) do technicalDuplicateCount = technicalDuplicateCount + 1 end
 
 local ownerSet, owners = {}, {}
 local function addOwner(owner)
@@ -75,7 +78,7 @@ for _, name in ipairs(stores) do
 end
 
 io.write(string.format(
-    "SavedVariables OK: mails=%d incoming=%d archive=%d mailboxes=%d participant_groups=%d threads=%d system_excluded=%d possible_duplicates=%d\n",
+    "SavedVariables OK: mails=%d incoming=%d archive=%d mailboxes=%d participant_groups=%d threads=%d system_excluded=%d possible_duplicates=%d technical_aliases=%d\n",
     #CartasDB.mails, #CartasDB.incoming, #CartasDB.archive, #owners,
-    groupedParticipants, groupedThreads, excludedSystem, duplicateCandidates
+    groupedParticipants, groupedThreads, excludedSystem, duplicateCandidates, technicalDuplicateCount
 ))

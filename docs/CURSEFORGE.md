@@ -9,8 +9,18 @@
 
 El secret se crea una sola vez en el repositorio de GitHub desde
 `Settings → Secrets and variables → Actions → New repository secret`. Su valor
-nunca se añade al repositorio. Mientras el proyecto de CurseForge esté en
-revisión no se debe crear ningún tag de publicación.
+nunca se añade al repositorio. El proyecto está aprobado, pero no se debe crear
+ningún tag de publicación sin autorización expresa del propietario.
+
+## Desarrollo sin publicar
+
+Las iteraciones se realizan en el worktree hermano `../Cartas-Dev`, rama local
+`dev/parchment-ui`, con una versión `-dev`. Los commits locales, los tests y las
+instalaciones directas de los tres runtime files no activan CurseForge.
+
+Durante esta fase no se sube la rama, no se crean tags `v*`, no se ejecuta el
+generador de releases y no se reemplaza `Wow-Midnight-Cartas-Last-Version.zip`.
+Solo se integra y publica la versión que el propietario autorice expresamente.
 
 ## Crear una publicación
 
@@ -20,11 +30,11 @@ revisión no se debe crear ningún tag de publicación.
 4. Hacer commit y push de `main`; esperar a que CI termine correctamente.
 5. Crear un tag anotado que coincida exactamente con la versión:
 
-   `git tag -a v1.9.0-rc8 -m "Cartas 1.9.0-rc8"`
+   `git tag -a v1.10.0 -m "Cartas 1.10.0"`
 
 6. Subir el tag:
 
-   `git push origin v1.9.0-rc8`
+   `git push origin v1.10.0`
 
 El workflow repite tests y auditoría, valida que el ZIP contenga solo los tres
 runtime files y lo sube mediante la API oficial. No se debe volver a ejecutar

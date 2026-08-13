@@ -164,6 +164,115 @@ test("future archived timestamps are repaired without losing original metadata",
     assertEqual(API.RepairImpossibleFutureTimestamps(), 0)
 end)
 
+test("legacy 30-day inbox timestamps are matched after rows shift", function()
+    resetDB()
+    local currentDaysLeft = 20
+    local previousSeenAt = Mock.now - 3600
+    local previousDaysLeft = currentDaysLeft + (3600 / 86400)
+    local correctedTimestamp = API.EstimateMailTimestamp(currentDaysLeft, 0, Mock.now)
+    local legacyTimestamp = math.floor(
+        previousSeenAt - ((30 - previousDaysLeft) * 86400) + 0.5
+    )
+    assertEqual(legacyTimestamp, correctedTimestamp + 86400)
+
+    local legacy = incoming(1, legacyTimestamp, "Texto conservado")
+    legacy.subject = "Tema desplazado"
+    legacy.daysLeft = previousDaysLeft
+    legacy._firstSeenAt = previousSeenAt
+    legacy._lastSeenAt = previousSeenAt
+    legacy._lastInboxIndex = 1
+    CartasDB.archive = {legacy}
+    CartasDB.nextSequence = 1
+
+    Mock.inbox = {
+        {sender = "Brina", subject = "Carta nueva", body = "", daysLeft = 30.5, wasRead = false},
+        {sender = legacy.sender, subject = legacy.subject, body = legacy.body, daysLeft = currentDaysLeft, wasRead = true},
+    }
+    API.ScanInbox()
+
+    assertEqual(#CartasDB.archive, 2)
+    assertEqual(legacy.timestamp, correctedTimestamp)
+    assertEqual(legacy._timestampBeforeExpiryFix, legacyTimestamp)
+    assertEqual(legacy._timestampRepair, "normal-expiry-31-live-match")
+    assertEqual(legacy._lastInboxIndex, 2)
+    assertEqual(legacy.body, "Texto conservado")
+    assertEqual(Mock.getInboxTextCalls, 1)
+end)
+
+test("unread one-day candidates are never merged from headers alone", function()
+    resetDB()
+    local currentDaysLeft = 20
+    local previousSeenAt = Mock.now - 3600
+    local previousDaysLeft = currentDaysLeft + (3600 / 86400)
+    local correctedTimestamp = API.EstimateMailTimestamp(currentDaysLeft, 0, Mock.now)
+    local legacyTimestamp = correctedTimestamp + 86400
+    local legacy = incoming(1, legacyTimestamp, "Cuerpo todavía privado")
+    legacy.subject = "Cabecera ambigua"
+    legacy.daysLeft = previousDaysLeft
+    legacy._firstSeenAt = previousSeenAt
+    legacy._lastSeenAt = previousSeenAt
+    legacy._lastInboxIndex = 1
+    CartasDB.archive = {legacy}
+    CartasDB.nextSequence = 1
+
+    Mock.inbox = {
+        {sender = "Brina", subject = "Carta nueva", body = "", daysLeft = 30.5, wasRead = false},
+        {sender = legacy.sender, subject = legacy.subject, body = legacy.body, daysLeft = currentDaysLeft, wasRead = false},
+    }
+    API.ScanInbox()
+
+    assertEqual(#CartasDB.archive, 3)
+    assertEqual(legacy.timestamp, legacyTimestamp)
+    assertEqual(legacy._timestampBeforeExpiryFix, nil)
+    assertEqual(Mock.getInboxTextCalls, 0)
+end)
+
+test("proven expiry duplicates are filtered without deleting either record", function()
+    resetDB()
+    local correctedDaysLeft = 20
+    local correctedTimestamp = API.EstimateMailTimestamp(correctedDaysLeft, 0, Mock.now)
+    local legacySeenAt = Mock.now - 3600
+    local legacyDaysLeft = correctedDaysLeft + (3600 / 86400)
+
+    local legacy = incoming(1, correctedTimestamp + 86400, "Mismo texto técnico")
+    legacy.subject = "Duplicado de migración"
+    legacy.daysLeft = legacyDaysLeft
+    legacy._firstSeenAt = legacySeenAt
+    legacy._lastSeenAt = legacySeenAt
+
+    local corrected = incoming(2, correctedTimestamp, legacy.body)
+    corrected.subject = legacy.subject
+    corrected.daysLeft = correctedDaysLeft
+    corrected._firstSeenAt = Mock.now
+    corrected._lastSeenAt = Mock.now
+
+    local legitimateFirst = incoming(3, correctedTimestamp, "Texto repetido legítimo")
+    legitimateFirst.subject = "Dos cartas reales"
+    legitimateFirst.daysLeft = correctedDaysLeft
+    legitimateFirst._firstSeenAt = Mock.now
+    legitimateFirst._lastSeenAt = Mock.now
+
+    local legitimateSecond = incoming(4, correctedTimestamp + 86400, legitimateFirst.body)
+    legitimateSecond.subject = legitimateFirst.subject
+    legitimateSecond.daysLeft = correctedDaysLeft + 1
+    legitimateSecond._firstSeenAt = Mock.now
+    legitimateSecond._lastSeenAt = Mock.now
+
+    CartasDB.archive = {legacy, corrected, legitimateFirst, legitimateSecond}
+    CartasDB.nextSequence = 4
+    local legacyTimestamp = legacy.timestamp
+    local aliases = API.BuildTechnicalDuplicateAliases(CartasDB.archive)
+    local correspondence = API.GetAllCorrespondence()
+
+    assertEqual(aliases[legacy], corrected)
+    assertEqual(aliases[legitimateFirst], nil)
+    assertEqual(aliases[legitimateSecond], nil)
+    assertEqual(#correspondence, 3)
+    assertEqual(#CartasDB.archive, 4)
+    assertEqual(legacy.timestamp, legacyTimestamp)
+    assertTrue(not legacy.hidden)
+end)
+
 test("reset reply subject keeps the same participant thread", function()
     resetDB()
     local historical = API.BuildThreadKey("RE: RE: RE: Tema archivado", "Brina")
@@ -196,6 +305,46 @@ test("conversation history groups threads under each participant", function()
     local filtered = API.BuildParticipantGroups(participants[2].threads[2].messages, "bri")
     assertEqual(#filtered, 1)
     assertEqual(filtered[1].name, "Brina")
+end)
+
+test("legacy organization metadata is preserved but ignored", function()
+    local legacyOrganization = {old = {title = "No aplicar", folder = "No aplicar", pinned = true}}
+    resetDB({
+        mails = {}, incoming = {}, archive = {}, seen = {}, deletedArchive = {},
+        nextSequence = 0, threadOrganization = legacyOrganization,
+    })
+    local participants = API.BuildParticipantGroups({
+        {person = "Brina", subject = "Tema original", timestamp = 10, sequence = 1},
+    })
+
+    assertEqual(CartasDB.threadOrganization, legacyOrganization)
+    assertEqual(participants[1].threads[1].subject, "Tema original")
+    assertEqual(participants[1].threads[1].displaySubject, nil)
+    assertEqual(participants[1].threads[1].folder, nil)
+    assertEqual(participants[1].threads[1].pinned, nil)
+end)
+
+test("visual settings are isolated and clamp opacity and window size", function()
+    resetDB({
+        mails = {{sequence = 1, subject = "Intacto", body = "Conservar"}},
+        incoming = {}, archive = {}, seen = {}, deletedArchive = {}, nextSequence = 1,
+    })
+
+    assertEqual(CartasDB.ui.theme, API.UI_THEME_PARCHMENT)
+    assertEqual(CartasDB.ui.opacity, 1)
+    assertEqual(CartasDB.ui.width, API.HISTORY_WIDTH_DEFAULT)
+    assertEqual(CartasDB.ui.height, API.HISTORY_HEIGHT_DEFAULT)
+    API.SetVisualSettings(API.UI_THEME_CLASSIC, 0.1, 100, 5000)
+    assertEqual(CartasDB.ui.theme, API.UI_THEME_CLASSIC)
+    assertEqual(CartasDB.ui.opacity, API.UI_OPACITY_MIN)
+    assertEqual(CartasDB.ui.width, API.HISTORY_WIDTH_MIN)
+    assertEqual(CartasDB.ui.height, API.HISTORY_HEIGHT_MAX)
+    API.SetVisualSettings(API.UI_THEME_PARCHMENT, 5)
+    assertEqual(CartasDB.ui.theme, API.UI_THEME_PARCHMENT)
+    assertEqual(CartasDB.ui.opacity, API.UI_OPACITY_MAX)
+    assertEqual(#CartasDB.mails, 1)
+    assertEqual(CartasDB.mails[1].subject, "Intacto")
+    assertEqual(CartasDB.mails[1].body, "Conservar")
 end)
 
 test("compose enforces the live WoW subject and body limits", function()
@@ -372,6 +521,99 @@ test("rendering the live inbox only reads headers", function()
     assertTrue(not Mock.inbox[1].wasRead)
 end)
 
+test("live inbox deletion is blocked for every protected content type", function()
+    local cases = {
+        {
+            label = "objeto",
+            mail = {items = {{name = "Cristal ficticio", itemID = 1, count = 1}}},
+        },
+        {label = "dinero", mail = {money = 12345}},
+        {label = "contra reembolso", mail = {CODAmount = 67890}},
+    }
+
+    for _, case in ipairs(cases) do
+        resetDB()
+        case.mail.sender = "Brina-TestRealm"
+        case.mail.subject = "Contenido protegido"
+        case.mail.body = "No borrar"
+        case.mail.daysLeft = 20
+        case.mail.wasRead = false
+        case.mail.canDelete = true
+        Mock.inbox = {case.mail}
+
+        local requested, reason = API.RequestDeleteLiveInboxMail(1)
+
+        assertTrue(not requested, case.label)
+        assertEqual(reason, "protected", case.label)
+        assertEqual(Mock.popup.name, "CARTAS_LIVE_MAIL_WARNING", case.label)
+        assertTrue(Mock.popup.textArg1:find(case.label, 1, true) ~= nil, case.label)
+        assertEqual(Mock.deleteInboxCalls, 0, case.label)
+        assertEqual(Mock.getInboxTextCalls, 0, case.label)
+        assertEqual(#Mock.inbox, 1, case.label)
+    end
+end)
+
+test("return-only player mail is never silently returned by delete", function()
+    resetDB()
+    Mock.inbox = {{
+        sender = "Brina-TestRealm", subject = "Solo devolver", body = "Texto",
+        daysLeft = 20, wasRead = true, canDelete = false,
+    }}
+
+    local requested, reason = API.RequestDeleteLiveInboxMail(1)
+
+    assertTrue(not requested)
+    assertEqual(reason, "return-only")
+    assertEqual(Mock.popup.name, "CARTAS_LIVE_MAIL_WARNING")
+    assertEqual(Mock.deleteInboxCalls, 0)
+    assertEqual(#Mock.inbox, 1)
+end)
+
+test("live inbox deletion archives the body before removing the Blizzard row", function()
+    resetDB()
+    Mock.inbox = {{
+        sender = "Brina-TestRealm", subject = "Borrado seguro", body = "Cuerpo preservado",
+        daysLeft = 20, wasRead = false, canDelete = true,
+    }}
+    API.ScanInbox()
+    assertEqual(CartasDB.archive[1].body, "")
+    assertEqual(Mock.getInboxTextCalls, 0)
+
+    local requested = API.RequestDeleteLiveInboxMail(1)
+    assertTrue(requested)
+    assertEqual(Mock.popup.name, "CARTAS_DELETE_LIVE_MAIL")
+    StaticPopupDialogs.CARTAS_DELETE_LIVE_MAIL.OnAccept(nil, Mock.popup.data)
+
+    assertEqual(Mock.getInboxTextCalls, 1)
+    assertEqual(Mock.deleteInboxCalls, 1)
+    assertEqual(#Mock.inbox, 0)
+    assertEqual(#CartasDB.archive, 1)
+    assertEqual(CartasDB.archive[1].body, "Cuerpo preservado")
+    assertTrue(CartasDB.archive[1].wasRead)
+    assertTrue(not CartasDB.archive[1].hidden)
+end)
+
+test("live inbox deletion aborts when the selected row changes", function()
+    resetDB()
+    Mock.inbox = {{
+        sender = "Brina-TestRealm", subject = "Fila original", body = "Texto",
+        daysLeft = 20, wasRead = true, canDelete = true,
+    }}
+    assertTrue(API.RequestDeleteLiveInboxMail(1))
+    local confirmation = Mock.popup
+    Mock.inbox[1] = {
+        sender = "Celene-TestRealm", subject = "Fila distinta", body = "Otro texto",
+        daysLeft = 29, wasRead = true, canDelete = true,
+    }
+
+    StaticPopupDialogs.CARTAS_DELETE_LIVE_MAIL.OnAccept(nil, confirmation.data)
+
+    assertEqual(Mock.deleteInboxCalls, 0)
+    assertEqual(Mock.getInboxTextCalls, 0)
+    assertEqual(#Mock.inbox, 1)
+    assertEqual(Mock.popup.name, "CARTAS_LIVE_MAIL_WARNING")
+end)
+
 test("live Blizzard unread state wins over stale archived read state", function()
     resetDB()
     local staleArchive = {wasRead = true}
@@ -449,6 +691,59 @@ test("hidden history frames refresh exactly once through OnShow", function()
     API.ShowFrameWithInitialRefresh(hidden, function() refreshCount = refreshCount + 1 end)
 
     assertEqual(refreshCount, 1)
+end)
+
+test("visual modes and window sizes build without reading unread mail", function()
+    resetDB({
+        mails = {{
+            sequence = 1, owner = Mock.player, recipient = "Arianna-TestRealm",
+            subject = "Crónica", body = "Texto enviado", timestamp = Mock.now - 20,
+        }},
+        incoming = {}, archive = {}, seen = {}, deletedArchive = {}, nextSequence = 1,
+    })
+    Mock.inbox = {{
+        sender = "Arianna-TestRealm", subject = "RE: Crónica",
+        body = "Texto pendiente", daysLeft = 30.5, wasRead = false, canReply = true,
+    }}
+    API.ScanInbox()
+    local callsBefore = Mock.getInboxTextCalls
+    local archiveCount = #CartasDB.archive
+    local sentBody = CartasDB.mails[1].body
+
+    API.SetVisualSettings(API.UI_THEME_PARCHMENT, 1, 1180, 820)
+    API.OpenHistoryFrame()
+    API.OpenVisualSettings()
+    assertTrue(CartasFrame ~= nil)
+    assertTrue(CartasVisualSettingsFrame ~= nil)
+    assertEqual(CartasFrame:GetWidth(), 1180)
+    assertEqual(CartasFrame:GetHeight(), 820)
+    assertTrue(not CartasFrame.compactLayout)
+    assertTrue(CartasFrame.themeSearchPanel ~= nil)
+    assertEqual(CartasFrame.themeSearchPanel.backdropColor[1], 0.96)
+    assertEqual(CartasFrame.themeSearchPanel.backdropColor[4], 1)
+
+    CartasVisualSettingsFrame.classicButton.scripts.OnClick()
+    CartasVisualSettingsFrame.opacitySlider:SetValue(70)
+    CartasVisualSettingsFrame.widthSlider:SetValue(800)
+    CartasVisualSettingsFrame.heightSlider:SetValue(860)
+    assertEqual(CartasDB.ui.theme, API.UI_THEME_CLASSIC)
+    assertEqual(CartasDB.ui.opacity, 0.7)
+    assertEqual(CartasDB.ui.width, 800)
+    assertEqual(CartasDB.ui.height, 860)
+    assertEqual(CartasFrame:GetWidth(), 800)
+    assertEqual(CartasFrame:GetHeight(), 860)
+    assertTrue(CartasFrame.compactLayout)
+    assertEqual(CartasFrame.themeSearchPanel.backdropColor[4], 1)
+
+    CartasVisualSettingsFrame.parchmentButton.scripts.OnClick()
+    assertEqual(CartasDB.ui.theme, API.UI_THEME_PARCHMENT)
+    API.OpenCompose("Arianna-TestRealm", "RE: Crónica", "Borrador local")
+    assertEqual(CartasComposeFrame.body:GetText(), "Borrador local")
+
+    assertEqual(Mock.getInboxTextCalls, callsBefore)
+    assertEqual(#CartasDB.archive, archiveCount)
+    assertEqual(CartasDB.mails[1].body, sentBody)
+    assertTrue(not Mock.inbox[1].wasRead)
 end)
 
 test("system and Customer Support mail never become conversations", function()
